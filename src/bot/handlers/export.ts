@@ -1,4 +1,4 @@
-import { Bot, InputFile } from 'grammy';
+import { Bot, InputFile, InlineKeyboard } from 'grammy';
 import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
 
@@ -30,7 +30,13 @@ export function registerExportHandlers(bot: Bot<BotContext>) {
     const filename = `ChhayLuy_Transactions_${now}.csv`;
     await ctx.replyWithDocument(
       new InputFile(Buffer.from(lines.join('\n'), 'utf-8'), filename),
-      { caption: `📤 *${transactions.length} transactions exported*`, parse_mode: 'Markdown' },
+      {
+        caption: `📤 *${transactions.length} transactions exported*`,
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('📤 Export Again', 'menu:csv').text('📊 Reports', 'menu:report').row()
+          .text('🏠 Menu', 'goto:menu'),
+      },
     );
   });
 }

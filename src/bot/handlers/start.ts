@@ -288,7 +288,13 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     const filename = `ChhayLuy_Transactions_${now}.csv`;
     await ctx.replyWithDocument(
       new InputFile(new TextEncoder().encode(lines.join('\n')), filename),
-      { caption: `📤 *${transactions.length} transactions exported*`, parse_mode: 'Markdown' },
+      {
+        caption: `📤 *${transactions.length} transactions exported*`,
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('📤 Export Again', 'menu:csv').text('📊 Reports', 'menu:report').row()
+          .text('🏠 Menu', 'goto:menu'),
+      },
     );
   });
 
