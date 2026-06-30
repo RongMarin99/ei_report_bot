@@ -1,0 +1,29 @@
+{
+  "name": "ei-bot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:local": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script | wrangler d1 execute ei-bot --local --file -",
+    "prisma:migrate:prod": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script | wrangler d1 execute ei-bot --remote --file -",
+    "prisma:studio": "prisma studio",
+    "prisma:seed": "ts-node prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/adapter-d1": "^5.20.0",
+    "@prisma/client": "^5.20.0",
+    "dayjs": "^1.11.13",
+    "grammy": "^1.30.0",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241022.0",
+    "@types/node": "^20.3.1",
+    "prisma": "^5.20.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.5.0",
+    "wrangler": "^3.80.0"
+  }
+}

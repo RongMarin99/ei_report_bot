@@ -1,0 +1,127 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:local.db"
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  telegramId BigInt   @unique @map("telegram_id")
+  username   String?
+  firstName  String?  @map("first_name")
+  currency   String   @default("USD")
+  timezone   String   @default("UTC")
+  language   String   @default("en")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  transactions          Transaction[]
+  categories            Category[]
+  budgets               Budget[]
+  reportSettings        ReportSettings?
+  reminders             Reminder[]
+  recurringTransactions RecurringTransaction[]
+
+  @@map("users")
+}
+
+model Transaction {
+  id              Int      @id @default(autoincrement())
+  userId          Int      @map("user_id")
+  type            String   // "income" | "expense"
+  amount          Float
+  currency        String
+  categoryId      Int?     @map("category_id")
+  note            String?
+  transactionDate DateTime @map("transaction_date")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@map("transactions")
+}
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  userId    Int?     @map("user_id")
+  name      String
+  type      String   // "income" | "expense"
+  icon      String?
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user                  User?                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions          Transaction[]
+  budgets               Budget[]
+  recurringTransactions RecurringTransaction[]
+
+  @@map("categories")
+}
+
+model Budget {
+  id         Int      @id @default(autoincrement())
+  userId     Int      @map("user_id")
+  categoryId Int?     @map("category_id")
+  amount     Float
+  period     String   // "weekly" | "monthly"
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@unique([userId, categoryId, period])
+  @@map("budgets")
+}
+
+model ReportSettings {
+  userId           Int      @unique @map("user_id")
+  dailyEnabled     Boolean  @default(false) @map("daily_enabled")
+  weeklyEnabled    Boolean  @default(false) @map("weekly_enabled")
+  monthlyEnabled   Boolean  @default(true) @map("monthly_enabled")
+  quarterlyEnabled Boolean  @default(false) @map("quarterly_enabled")
+  yearlyEnabled    Boolean  @default(false) @map("yearly_enabled")
+  sendTime         String   @default("22:00") @map("send_time")
+  timezone         String   @default("UTC")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("report_settings")
+}
+
+model Reminder {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  title         String
+  amount        Float?
+  frequency     String   // "daily" | "weekly" | "monthly" | "quarterly" | "yearly"
+  nextExecution DateTime @map("next_execution")
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("reminders")
+}
+
+model RecurringTransaction {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  type          String   // "income" | "expense"
+  amount        Float
+  categoryId    Int?     @map("category_id")
+  frequency     String   // "daily" | "weekly" | "monthly" | "quarterly" | "yearly"
+  nextExecution DateTime @map("next_execution")
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@map("recurring_transactions")
+}

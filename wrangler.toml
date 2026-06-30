@@ -1,0 +1,18 @@
+name = "ei-bot"
+main = "src/index.ts"
+compatibility_date = "2024-10-22"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+NODE_ENV = "production"
+
+# Set secrets via CLI:
+#   wrangler secret put BOT_TOKEN
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ei-bot"
+database_id = "f9e62083-8b01-40df-96c1-bdaa24546d11"
+
+[triggers]
+crons = ["0 * * * *", "*/15 * * * *"]

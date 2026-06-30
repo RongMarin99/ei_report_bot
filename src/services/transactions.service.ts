@@ -1,0 +1,205 @@
+import { PrismaClient } from '@prisma/client';
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import timezone from 'dayjs/plugin/timezone';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+export async function create(
+  prisma: PrismaClient,
+  data: {
+    userId: number;
+    type: 'income' | 'expense';
+    amount: number;
+    currency: string;
+    categoryId?: number;
+    note?: string;
+    transactionDate: Date;
+  },
+) {
+  return prisma.transaction.create({
+    data,
+    include: { category: true },
+  });
+}
+
+export function getDateRange(period: string, tz: string): { start: Date; end: Date } {
+  const now = dayjs().tz(tz);
+  switch (period) {
+    case 'daily':
+      return { start: now.startOf('day').toDate(), end: now.endOf('day').toDate() };
+    case 'weekly':
+      return { start: now.startOf('week').toDate(), end: now.endOf('week').toDate() };
+    case 'monthly':
+      return { start: now.startOf('month').toDate(), end: now.endOf('month').toDate() };
+    case 'quarterly': {
+      const q = Math.floor(now.month() / 3);
+      const start = now.month(q * 3).startOf('month');
+      const end = now.month(q * 3 + 2).endOf('month');
+      return { start: start.toDate(), end: end.toDate() };
+    }
+    case 'yearly':
+      return { start: now.startOf('year').toDate(), end: now.endOf('year').toDate() };
+    default:
+      return { start: now.startOf('month').toDate(), end: now.endOf('month').toDate() };
+  }
+}
+
+export async function getSummary(
+  prisma: PrismaClient,
+  userId: number,
+  period: string,
+  tz: string,
+) {
+  const { start, end } = getDateRange(period, tz);
+  const transactions = await prisma.transaction.findMany({
+    where: { userId, transactionDate: { gte: start, lte: end } },
+    include: { category: true },
+    orderBy: { transactionDate: 'desc' },
+  });
+
+  const totalIncome = transactions
+    .filter((t) => t.type === 'income')
+    .reduce((s, t) => s + t.amount, 0);
+  const totalExpenses = transactions
+    .filter((t) => t.type === 'expense')
+    .reduce((s, t) => s + t.amount, 0);
+
+  return { transactions, totalIncome, totalExpenses, netBalance: totalIncome - totalExpenses };
+}
+
+export async function getMonthlySpentByCategory(
+  prisma: PrismaClient,
+  userId: number,
+  categoryId: number,
+  period: string = 'monthly',
+) {
+  const { start, end } = getDateRange(period, 'UTC');
+  const result = await prisma.transaction.aggregate({
+    where: { userId, categoryId, type: 'expense', transactionDate: { gte: start, lte: end } },
+    _sum: { amount: true },
+  });
+  return result._sum.amount ?? 0;
+}
+
+export async function search(prisma: PrismaClient, userId: number, query: string) {
+  const q = query.toLowerCase();
+
+  const daysMatch = q.match(/last\s+(\d+)\s+days?/);
+  if (daysMatch) {
+    const days = parseInt(daysMatch[1]);
+    const start = dayjs().subtract(days, 'day').toDate();
+    return prisma.transaction.findMany({
+      where: { userId, transactionDate: { gte: start } },
+      include: { category: true },
+      orderBy: { transactionDate: 'desc' },
+      take: 20,
+    });
+  }
+
+  if (q.startsWith('category ')) {
+    const catName = q.slice(9).trim();
+    return prisma.transaction.findMany({
+      where: {
+        userId,
+        category: { name: { contains: catName } },
+      },
+      include: { category: true },
+      orderBy: { transactionDate: 'desc' },
+      take: 20,
+    });
+  }
+
+  const amountMatch = q.match(/amount\s*([<>])\s*(\d+(?:\.\d+)?)/);
+  if (amountMatch) {
+    const op = amountMatch[1];
+    const val = parseFloat(amountMatch[2]);
+    return prisma.transaction.findMany({
+      where: {
+        userId,
+        amount: op === '>' ? { gt: val } : { lt: val },
+      },
+      include: { category: true },
+      orderBy: { transactionDate: 'desc' },
+      take: 20,
+    });
+  }
+
+  return prisma.transaction.findMany({
+    where: {
+      userId,
+      OR: [
+        { note: { contains: query } },
+        { category: { name: { contains: query } } },
+      ],
+    },
+    include: { category: true },
+    orderBy: { transactionDate: 'desc' },
+    take: 20,
+  });
+}
+
+export async function getStats(prisma: PrismaClient, userId: number, tz: string) {
+  const totalTransactions = await prisma.transaction.count({ where: { userId } });
+
+  const firstTx = await prisma.transaction.findFirst({
+    where: { userId },
+    orderBy: { transactionDate: 'asc' },
+  });
+
+  const allExpenses = await prisma.transaction.aggregate({
+    where: { userId, type: 'expense' },
+    _sum: { amount: true },
+  });
+  const allIncome = await prisma.transaction.aggregate({
+    where: { userId, type: 'income' },
+    _sum: { amount: true },
+  });
+
+  const totalExpenses = allExpenses._sum.amount ?? 0;
+  const totalIncome = allIncome._sum.amount ?? 0;
+
+  const daysSinceFirst = firstTx
+    ? Math.max(1, dayjs().diff(dayjs(firstTx.transactionDate), 'day'))
+    : 1;
+  const monthsSinceFirst = Math.max(1, daysSinceFirst / 30);
+
+  const highestExpense = await prisma.transaction.findFirst({
+    where: { userId, type: 'expense' },
+    orderBy: { amount: 'desc' },
+    include: { category: true },
+  });
+
+  const categoryGroups = await prisma.transaction.groupBy({
+    by: ['categoryId'],
+    where: { userId, type: 'expense' },
+    _sum: { amount: true },
+    orderBy: { _sum: { amount: 'desc' } },
+    take: 5,
+  });
+
+  const topCategories = await Promise.all(
+    categoryGroups.map(async (g) => {
+      const cat = g.categoryId
+        ? await prisma.category.findUnique({ where: { id: g.categoryId } })
+        : null;
+      return {
+        name: cat?.name ?? 'Other',
+        icon: cat?.icon ?? '📌',
+        total: g._sum.amount ?? 0,
+      };
+    }),
+  );
+
+  const savingsRate = totalIncome > 0 ? ((totalIncome - totalExpenses) / totalIncome) * 100 : 0;
+
+  return {
+    totalTransactions,
+    avgDailySpending: totalExpenses / daysSinceFirst,
+    avgMonthlyIncome: totalIncome / monthsSinceFirst,
+    highestExpense,
+    topCategories,
+    savingsRate,
+  };
+}
