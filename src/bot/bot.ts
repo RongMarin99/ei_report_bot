@@ -27,7 +27,10 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   registerStatsHandlers(bot);
   registerSettingsHandlers(bot);
 
-  bot.catch((err) => {
-    console.error('Bot error:', err.message);
+  bot.catch(async (err) => {
+    console.error('Bot error:', err.message, err.stack);
+    try {
+      await err.ctx.reply(`⚠️ Error: ${err.message}`);
+    } catch {}
   });
 }

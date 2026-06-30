@@ -11,7 +11,7 @@ NODE_ENV = "production"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "ei-bot"
+database_name = "ei_report_bot_db"
 database_id = "f9e62083-8b01-40df-96c1-bdaa24546d11"
 
 [triggers]

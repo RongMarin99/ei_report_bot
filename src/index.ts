@@ -9,6 +9,26 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get('/', (c) => c.json({ status: 'ok', bot: 'EI Bot' }));
 
+app.get('/setup', async (c) => {
+  const env = c.env;
+  const origin = new URL(c.req.url).origin;
+  const webhookUrl = `${origin}/webhook`;
+
+  const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/setWebhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: webhookUrl, drop_pending_updates: true }),
+  });
+  const data = await res.json() as any;
+  return c.json({ webhook_url: webhookUrl, telegram_response: data });
+});
+
+app.get('/webhook-info', async (c) => {
+  const env = c.env;
+  const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getWebhookInfo`);
+  return c.json(await res.json());
+});
+
 app.post('/webhook', async (c) => {
   const env = c.env;
   const bot = new Bot<BotContext>(env.BOT_TOKEN);
