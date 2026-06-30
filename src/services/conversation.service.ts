@@ -10,6 +10,7 @@ export interface ConvData {
   amount?: number;
   currency?: string;
   type?: 'expense' | 'income';
+  toDelete?: number[]; // message IDs to clean up on complete/cancel
 }
 
 export async function getConv(prisma: PrismaClient, userId: number) {

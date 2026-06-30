@@ -3,6 +3,14 @@ import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
 import * as CategoriesService from '../../services/categories.service';
 import * as ConvService from '../../services/conversation.service';
+import { getSummary, getDateRange, fmtAmount as fmt, getStats } from '../../services/transactions.service';
+import { generateReportPDF } from '../../services/pdf.service';
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import timezone from 'dayjs/plugin/timezone';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 export function mainMenuKeyboard(user: any): InlineKeyboard {
   const rate = user.exchangeRate ?? 4100;
@@ -107,7 +115,12 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
     if (!user) return;
 
-    await ConvService.setConv(ctx.prisma, user.id, `${type}:amount`, { currency, type });
+    // Track this message so we can delete it after action completes
+    const msgId = ctx.callbackQuery.message?.message_id;
+    await ConvService.setConv(ctx.prisma, user.id, `${type}:amount`, {
+      currency, type,
+      toDelete: msgId ? [msgId] : [],
+    });
 
     const icon = type === 'expense' ? '💸' : '💰';
     const hint = currency === 'KHR' ? '20000' : '5';
@@ -203,22 +216,21 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
     if (!user) return;
 
-    const { getStats, fmtAmount } = await import('../../services/transactions.service');
     const rate = user.exchangeRate ?? 4100;
     const stats = await getStats(ctx.prisma, user.id, user.timezone, user.currency, rate);
 
     let msg = `📈 *Statistics*\n\n`;
     msg += `Total transactions: ${stats.totalTransactions}\n`;
-    msg += `Avg daily spend: ${fmtAmount(stats.avgDailySpending, user.currency)}\n`;
-    msg += `Avg monthly income: ${fmtAmount(stats.avgMonthlyIncome, user.currency)}\n`;
+    msg += `Avg daily spend: ${fmt(stats.avgDailySpending, user.currency)}\n`;
+    msg += `Avg monthly income: ${fmt(stats.avgMonthlyIncome, user.currency)}\n`;
     msg += `Savings rate: ${stats.savingsRate.toFixed(1)}%\n`;
     if (stats.highestExpense) {
-      msg += `Biggest expense: ${fmtAmount(stats.highestExpense.amount, user.currency)}${stats.highestExpense.note ? ` — ${stats.highestExpense.note}` : ''}\n`;
+      msg += `Biggest expense: ${fmt(stats.highestExpense.amount, user.currency)}${stats.highestExpense.note ? ` — ${stats.highestExpense.note}` : ''}\n`;
     }
     if (stats.topCategories.length > 0) {
       msg += `\n*Top Spending Categories:*\n`;
       stats.topCategories.forEach((c, i) => {
-        msg += `${i + 1}. ${c.icon} ${c.name}: ${fmtAmount(c.total, user.currency)}\n`;
+        msg += `${i + 1}. ${c.icon} ${c.name}: ${fmt(c.total, user.currency)}\n`;
       });
     }
 
@@ -322,58 +334,50 @@ export function buildScheduleKeyboard(s: any): InlineKeyboard {
 }
 
 async function sendReportPDF(ctx: any, user: any, period: string) {
-  const dayjs = (await import('dayjs')).default;
-  const utc = (await import('dayjs/plugin/utc')).default;
-  const tz = (await import('dayjs/plugin/timezone')).default;
-  dayjs.extend(utc);
-  dayjs.extend(tz);
-
-  const { getSummary, getDateRange } = await import('../../services/transactions.service');
-  const { generateReportPDF } = await import('../../services/pdf.service');
-
   const rate = user.exchangeRate ?? 4100;
+  const now = dayjs().tz(user.timezone);
   const { start, end } = getDateRange(period, user.timezone);
   const { transactions, totalIncome, totalExpenses } = await getSummary(
-    ctx.prisma, user.id, period, user.timezone, user.currency, rate
+    ctx.prisma, user.id, period, user.timezone, user.currency, rate,
   );
 
-  const now = dayjs().tz(user.timezone);
-  const PERIOD_LABELS: Record<string, string> = {
-    daily: `Daily — ${now.format('DD MMM YYYY')}`,
-    weekly: `Weekly — ${dayjs(start).format('DD MMM')} to ${dayjs(end).format('DD MMM YYYY')}`,
-    monthly: `Monthly — ${now.format('MMMM YYYY')}`,
-    quarterly: `Q${Math.floor(now.month() / 3) + 1} ${now.year()}`,
-    yearly: `Yearly — ${now.year()}`,
-  };
+  const label =
+    period === 'daily'     ? `Daily_${now.format('YYYY-MM-DD')}` :
+    period === 'weekly'    ? `Weekly_${dayjs(start).format('YYYY-MM-DD')}` :
+    period === 'monthly'   ? `Monthly_${now.format('YYYY-MM')}` :
+    period === 'quarterly' ? `Q${Math.floor(now.month() / 3) + 1}_${now.year()}` :
+                             `Yearly_${now.year()}`;
+
+  const displayLabel =
+    period === 'daily'     ? `Daily — ${now.format('DD MMM YYYY')}` :
+    period === 'weekly'    ? `Weekly — ${dayjs(start).format('DD MMM')} to ${dayjs(end).format('DD MMM YYYY')}` :
+    period === 'monthly'   ? `Monthly — ${now.format('MMMM YYYY')}` :
+    period === 'quarterly' ? `Q${Math.floor(now.month() / 3) + 1} ${now.year()}` :
+                             `Yearly — ${now.year()}`;
 
   const pdfBytes = await generateReportPDF({
-    title: PERIOD_LABELS[period] ?? period,
+    title: displayLabel,
     dateRange: `${dayjs(start).format('DD MMM YYYY')} – ${dayjs(end).format('DD MMM YYYY')}`,
     baseCurrency: user.currency,
     exchangeRate: rate,
     transactions,
   });
 
-  const filename = `ei-bot-${period}-${now.format('YYYY-MM-DD')}.pdf`;
+  const filename = `EIBot_Report_${label}.pdf`;
   const net = totalIncome - totalExpenses;
 
   await ctx.replyWithDocument(
     { source: Buffer.from(pdfBytes), filename },
     {
       caption:
-        `📊 *${PERIOD_LABELS[period]}*\n\n` +
-        `💰 Income: ${formatAmt(totalIncome, user.currency)}\n` +
-        `💸 Expenses: ${formatAmt(totalExpenses, user.currency)}\n` +
-        `${net >= 0 ? '📈' : '📉'} Net: ${formatAmt(net, user.currency)}`,
+        `📊 *${displayLabel}*\n\n` +
+        `💰 Income: ${fmt(totalIncome, user.currency)}\n` +
+        `💸 Expenses: ${fmt(totalExpenses, user.currency)}\n` +
+        `${net >= 0 ? '📈' : '📉'} Net: ${fmt(net, user.currency)}`,
       parse_mode: 'Markdown',
       reply_markup: new InlineKeyboard()
         .text('📅 Another Period', 'menu:report')
         .text('🏠 Menu', 'goto:menu'),
     },
   );
-}
-
-function formatAmt(amount: number, currency: string): string {
-  if (currency === 'KHR') return `${Math.round(amount).toLocaleString()} KHR`;
-  return `${amount.toFixed(2)} ${currency}`;
 }

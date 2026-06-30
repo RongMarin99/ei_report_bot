@@ -13,12 +13,26 @@ function parseAmountInput(text: string): number | null {
   return amount;
 }
 
+async function deleteMessages(ctx: any, ids: number[]) {
+  for (const id of ids) {
+    await ctx.api.deleteMessage(ctx.chat!.id, id).catch(() => null);
+  }
+}
+
 export function registerConversationHandlers(bot: Bot<BotContext>) {
 
-  // Cancel button / command — clears conversation, shows menu
-  async function cancelFlow(ctx: any) {
+  // ─── Cancel (button or command) ───────────────────────────────────────────
+
+  async function cancelFlow(ctx: any, deleteCurrentMsg = false) {
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
     if (user) {
+      const conv = await ConvService.getConv(ctx.prisma, user.id);
+      if (conv?.data.toDelete?.length) {
+        await deleteMessages(ctx, conv.data.toDelete);
+      }
+      if (deleteCurrentMsg) {
+        await ctx.deleteMessage().catch(() => null);
+      }
       await ConvService.clearConv(ctx.prisma, user.id);
       await ctx.reply('🏠 *Main Menu*', {
         parse_mode: 'Markdown',
@@ -30,54 +44,64 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
   }
 
   bot.command('cancel', async (ctx) => {
-    await cancelFlow(ctx);
+    await cancelFlow(ctx, false);
   });
 
   bot.callbackQuery('conv:cancel', async (ctx) => {
     await ctx.answerCallbackQuery('Cancelled');
-    await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }).catch(() => null);
-    await cancelFlow(ctx);
+    await cancelFlow(ctx, true);
   });
 
-  // Skip description button
+  // ─── Skip description ─────────────────────────────────────────────────────
+
   bot.callbackQuery('conv:skip', async (ctx) => {
     await ctx.answerCallbackQuery();
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
     if (!user) return;
 
     const conv = await ConvService.getConv(ctx.prisma, user.id);
-    if (!conv || !conv.data.amount) return;
+    if (!conv?.data.amount) return;
 
+    // Delete the "Add description" message (this message)
+    await ctx.deleteMessage().catch(() => null);
     await saveTransaction(ctx, user, conv.data, '');
   });
 
-  // Text message handler (non-command)
+  // ─── Text message handler (non-command) ───────────────────────────────────
+
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
-    if (text.startsWith('/')) return; // let commands handle
+    if (text.startsWith('/')) return;
 
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
-    if (!user) {
-      return ctx.reply('Type /start to begin.');
-    }
+    if (!user) return ctx.reply('Type /start to begin.');
 
     const conv = await ConvService.getConv(ctx.prisma, user.id);
-    if (!conv) return; // no active flow
+    if (!conv) return;
 
-    const rate = (user as any).exchangeRate ?? 4100;
+    const rate = user.exchangeRate ?? 4100;
+    const userMsgId = ctx.message.message_id;
+
+    // ── Amount step ──────────────────────────────────────────────────────────
 
     if (conv.step === 'expense:amount' || conv.step === 'income:amount') {
       const amount = parseAmountInput(text);
       if (!amount) {
-        return ctx.reply(
-          `❌ Enter a number only.\n\nExamples: \`5\`  \`20000\`  \`1500.50\``,
+        const hint = await ctx.reply(
+          `❌ Enter a number.\n\nExamples: \`5\`  \`20000\`  \`1500.50\``,
           { parse_mode: 'Markdown' },
         );
+        // delete the invalid input + error hint after short delay is not possible,
+        // just track them for cleanup
+        await ConvService.setConv(ctx.prisma, user.id, conv.step, {
+          ...conv.data,
+          toDelete: [...(conv.data.toDelete ?? []), userMsgId, hint.message_id],
+        });
+        return;
       }
 
       const type = conv.step.split(':')[0] as 'expense' | 'income';
       const currency = conv.data.currency ?? user.currency;
-      await ConvService.setConv(ctx.prisma, user.id, `${type}:desc`, { amount, currency, type });
 
       const displayAmt = TransactionsService.fmtAmount(amount, currency);
       const baseAmt = currency !== user.currency
@@ -85,7 +109,7 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
         : '';
 
       const icon = type === 'expense' ? '💸' : '💰';
-      await ctx.reply(
+      const sent = await ctx.reply(
         `${icon} *${displayAmt}*${baseAmt}\n\nAdd a description:`,
         {
           parse_mode: 'Markdown',
@@ -94,19 +118,30 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
             .text('❌ Cancel', 'conv:cancel'),
         },
       );
+
+      await ConvService.setConv(ctx.prisma, user.id, `${type}:desc`, {
+        amount, currency, type,
+        toDelete: [...(conv.data.toDelete ?? []), userMsgId, sent.message_id],
+      });
       return;
     }
 
+    // ── Description step ─────────────────────────────────────────────────────
+
     if (conv.step === 'expense:desc' || conv.step === 'income:desc') {
-      await saveTransaction(ctx, user, conv.data, text);
+      // Track user's description message for cleanup
+      const toDelete = [...(conv.data.toDelete ?? []), userMsgId];
+      await saveTransaction(ctx, user, { ...conv.data, toDelete }, text);
     }
   });
 
+  // ─── Save transaction ─────────────────────────────────────────────────────
+
   async function saveTransaction(ctx: any, user: any, data: ConvService.ConvData, note: string) {
-    const { amount, currency, type } = data;
+    const { amount, currency, type, toDelete } = data;
     if (!amount || !currency || !type) return;
 
-    const rate = (user as any).exchangeRate ?? 4100;
+    const rate = user.exchangeRate ?? 4100;
     const category = await CategoriesService.findBestMatch(ctx.prisma, user.id, note, type);
 
     await TransactionsService.create(ctx.prisma, {
@@ -121,6 +156,11 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
 
     await ConvService.clearConv(ctx.prisma, user.id);
 
+    // Delete all intermediate messages to clean up chat
+    if (toDelete?.length) {
+      await deleteMessages(ctx, toDelete);
+    }
+
     const icon = type === 'expense' ? '💸' : '💰';
     const displayAmt = TransactionsService.fmtAmount(amount, currency);
     const baseAmt = currency !== user.currency
@@ -132,7 +172,6 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
     reply += `📂 ${category?.icon ?? ''} ${category?.name ?? 'Other'}\n`;
     if (note) reply += `📝 ${note}\n`;
 
-    // Budget check for expenses
     if (type === 'expense' && category) {
       const budget = await BudgetsService.getBudgetForCategory(ctx.prisma, user.id, category.id, 'monthly');
       if (budget) {
@@ -140,7 +179,7 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
         const pct = Math.round((spent / budget.amount) * 100);
         reply += `\n💼 Budget: ${TransactionsService.fmtAmount(spent, user.currency)} / ${TransactionsService.fmtAmount(budget.amount, user.currency)} (${pct}%)`;
         if (pct >= 100) reply += '\n🚨 Budget exceeded!';
-        else if (pct >= 80) reply += '\n⚠️ Near budget limit!';
+        else if (pct >= 80) reply += '\n⚠️ Near limit!';
       }
     }
 
