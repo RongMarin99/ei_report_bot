@@ -21,7 +21,7 @@ export async function createUser(
 export async function updateUser(
   prisma: PrismaClient,
   userId: number,
-  data: Partial<{ currency: string; timezone: string; language: string }>,
+  data: Partial<{ currency: string; timezone: string; language: string; exchangeRate: number }>,
 ) {
   return prisma.user.update({ where: { id: userId }, data });
 }

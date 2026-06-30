@@ -12,8 +12,10 @@ import { registerSearchHandlers } from './handlers/search';
 import { registerExportHandlers } from './handlers/export';
 import { registerStatsHandlers } from './handlers/stats';
 import { registerSettingsHandlers } from './handlers/settings';
+import { registerConversationHandlers } from './handlers/conversation';
 
 export function registerHandlers(bot: Bot<BotContext>): void {
+  // Commands and callbacks first
   registerStartHandlers(bot);
   registerIncomeHandlers(bot);
   registerExpenseHandlers(bot);
@@ -26,6 +28,9 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   registerExportHandlers(bot);
   registerStatsHandlers(bot);
   registerSettingsHandlers(bot);
+
+  // Text message handler LAST (catches non-command text for conversation flow)
+  registerConversationHandlers(bot);
 
   bot.catch(async (err) => {
     console.error('Bot error:', err.message, err.stack);

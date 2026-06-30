@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS "conversations" (
+  "user_id" INTEGER NOT NULL UNIQUE,
+  "step" TEXT NOT NULL,
+  "data" TEXT NOT NULL DEFAULT '{}',
+  "updated_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE
+);

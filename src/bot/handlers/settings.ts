@@ -1,6 +1,7 @@
 import { Bot } from 'grammy';
 import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
+import { buildScheduleKeyboard } from './start';
 
 export function registerSettingsHandlers(bot: Bot<BotContext>) {
   bot.command('settings', async (ctx) => {
@@ -76,14 +77,8 @@ export function registerSettingsHandlers(bot: Bot<BotContext>) {
 
     // Refresh the schedule keyboard
     const s = await UsersService.getOrCreateReportSettings(ctx.prisma, user.id);
-    const { InlineKeyboard } = await import('grammy');
     await ctx.editMessageReplyMarkup({
-      reply_markup: new InlineKeyboard()
-        .text(`${s.dailyEnabled ? '✅' : '❌'} Daily`, 'toggle_report:daily')
-        .text(`${s.weeklyEnabled ? '✅' : '❌'} Weekly`, 'toggle_report:weekly').row()
-        .text(`${s.monthlyEnabled ? '✅' : '❌'} Monthly`, 'toggle_report:monthly')
-        .text(`${s.quarterlyEnabled ? '✅' : '❌'} Quarterly`, 'toggle_report:quarterly').row()
-        .text(`${s.yearlyEnabled ? '✅' : '❌'} Yearly`, 'toggle_report:yearly'),
+      reply_markup: buildScheduleKeyboard(s),
     }).catch(() => null);
   });
 

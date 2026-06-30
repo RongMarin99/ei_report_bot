@@ -26,6 +26,7 @@ model User {
   reportSettings        ReportSettings?
   reminders             Reminder[]
   recurringTransactions RecurringTransaction[]
+  conversation          Conversation?
 
   @@map("users")
 }
@@ -125,4 +126,15 @@ model RecurringTransaction {
   category Category? @relation(fields: [categoryId], references: [id])
 
   @@map("recurring_transactions")
+}
+
+model Conversation {
+  userId    Int      @unique @map("user_id")
+  step      String
+  data      String   @default("{}")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("conversations")
 }
