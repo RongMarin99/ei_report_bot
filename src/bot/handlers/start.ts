@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
 import * as CategoriesService from '../../services/categories.service';
@@ -287,7 +287,7 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     const now = new Date().toISOString().split('T')[0];
     const filename = `ChhayLuy_Transactions_${now}.csv`;
     await ctx.replyWithDocument(
-      { source: Buffer.from(lines.join('\n'), 'utf-8'), filename },
+      new InputFile(new TextEncoder().encode(lines.join('\n')), filename),
       { caption: `📤 *${transactions.length} transactions exported*`, parse_mode: 'Markdown' },
     );
   });
@@ -454,7 +454,7 @@ async function sendReportPDF(ctx: any, user: any, period: string) {
   const net = totalIncome - totalExpenses;
 
   await ctx.replyWithDocument(
-    { source: Buffer.from(pdfBytes), filename },
+    new InputFile(pdfBytes, filename),
     {
       caption:
         `📊 *${displayLabel}*\n\n` +

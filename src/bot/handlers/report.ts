@@ -1,5 +1,4 @@
-import { Bot } from 'grammy';
-import { InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
 import { getSummary, getDateRange, fmtAmount } from '../../services/transactions.service';
@@ -72,7 +71,7 @@ async function sendPDFReport(ctx: any, user: any, period: string) {
   const net = totalIncome - totalExpenses;
 
   await ctx.replyWithDocument(
-    { source: Buffer.from(pdfBytes), filename },
+    new InputFile(pdfBytes, filename),
     {
       caption:
         `📊 *${label}*\n\n` +
