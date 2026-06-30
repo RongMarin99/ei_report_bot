@@ -4,7 +4,10 @@ export type ConvStep =
   | 'expense:amount'
   | 'expense:desc'
   | 'income:amount'
-  | 'income:desc';
+  | 'income:desc'
+  | 'search:note'
+  | 'search:amount_gt'
+  | 'search:amount_lt';
 
 export interface ConvData {
   amount?: number;

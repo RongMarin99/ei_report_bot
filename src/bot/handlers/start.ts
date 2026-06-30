@@ -12,14 +12,32 @@ import timezone from 'dayjs/plugin/timezone';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+export function formatSearchResults(results: any[], label: string, currency: string): string {
+  if (results.length === 0) return `🔍 *${label}*\n\nNo transactions found.`;
+  let msg = `🔍 *${label}*\n_${results.length} result${results.length !== 1 ? 's' : ''}_\n\n`;
+  const shown = results.slice(0, 12);
+  for (const tx of shown) {
+    const icon = tx.type === 'income' ? '💰' : '💸';
+    const date = new Date(tx.transactionDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+    const amt = tx.currency === 'KHR'
+      ? `${Math.round(tx.amount).toLocaleString()} KHR`
+      : `${Number(tx.amount).toFixed(2)} ${tx.currency}`;
+    msg += `${icon} ${amt}`;
+    if (tx.note) msg += ` — ${tx.note}`;
+    msg += `\n📅 ${date}\n`;
+  }
+  if (results.length > 12) msg += `\n_...and ${results.length - 12} more_`;
+  return msg;
+}
+
 export function mainMenuKeyboard(user: any): InlineKeyboard {
   const rate = user.exchangeRate ?? 4100;
   return new InlineKeyboard()
     .text('💰 Add Income', 'menu:income').text('💸 Add Expense', 'menu:expense').row()
     .text(`💹 Rate: 1 USD = ${Math.round(rate).toLocaleString()} KHR`, 'menu:rate').row()
     .text('📊 Reports', 'menu:report').text('⏰ Schedule', 'menu:schedule').row()
-    .text('📈 Stats', 'menu:stats').text('📤 Export PDF', 'menu:export').row()
-    .text('🔍 Search', 'menu:search').text('📋 Category', 'menu:category');
+    .text('📈 Stats', 'menu:stats').text('📤 CSV', 'menu:csv').row()
+    .text('🔍 Search', 'menu:search');
 }
 
 export function registerStartHandlers(bot: Bot<BotContext>) {
@@ -36,12 +54,12 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
       await ConvService.clearConv(ctx.prisma, user.id);
       const rate = user.exchangeRate ?? 4100;
       await ctx.reply(
-        `👋 *EI Bot*\n\nBase: *${user.currency}*  |  Rate: 1 USD = ${Math.round(rate).toLocaleString()} KHR\n\nWhat would you like to do?`,
+        `👋 *ចាយលុយ Report Bot*\n\nBase: *${user.currency}*  |  Rate: 1 USD = ${Math.round(rate).toLocaleString()} KHR\n\nWhat would you like to do?`,
         { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard(user) },
       );
     } else {
       await ctx.reply(
-        '👋 *Welcome to EI Bot!*\n\nTrack income & expenses in USD and KHR.\n\nChoose your *base currency* for reports:',
+        '👋 *Welcome to ចាយលុយ Report Bot!*\n\nTrack income & expenses in USD and KHR.\n\nChoose your *base currency* for reports:',
         {
           parse_mode: 'Markdown',
           reply_markup: new InlineKeyboard()
@@ -240,34 +258,103 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     });
   });
 
-  // ─── Menu: Export ─────────────────────────────────────────────────────────
+  // ─── Menu: CSV Export ────────────────────────────────────────────────────────
 
-  bot.callbackQuery('menu:export', async (ctx) => {
-    await ctx.answerCallbackQuery('⏳ Generating PDF…');
+  bot.callbackQuery('menu:csv', async (ctx) => {
+    await ctx.answerCallbackQuery('⏳ Generating CSV…');
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
     if (!user) return;
 
-    await sendReportPDF(ctx, user, 'monthly');
+    const transactions = await ctx.prisma.transaction.findMany({
+      where: { userId: user.id },
+      include: { category: true },
+      orderBy: { transactionDate: 'desc' },
+    });
+
+    const headers = ['Date', 'Type', 'Category', 'Amount', 'Currency', 'Note'];
+    const lines = [
+      headers.join(','),
+      ...transactions.map((t) => [
+        new Date(t.transactionDate).toLocaleDateString('en-GB'),
+        t.type,
+        (t as any).category?.name ?? 'Other',
+        t.amount.toFixed(2),
+        t.currency,
+        (t.note ?? '').replace(/"/g, '""'),
+      ].map((v) => `"${v}"`).join(',')),
+    ];
+
+    const now = new Date().toISOString().split('T')[0];
+    const filename = `ChhayLuy_Transactions_${now}.csv`;
+    await ctx.replyWithDocument(
+      { source: Buffer.from(lines.join('\n'), 'utf-8'), filename },
+      { caption: `📤 *${transactions.length} transactions exported*`, parse_mode: 'Markdown' },
+    );
   });
 
   // ─── Menu: Search ─────────────────────────────────────────────────────────
 
   bot.callbackQuery('menu:search', async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.reply(
-      '🔍 *Search Transactions*\n\n`/search coffee` — by note\n`/search category food` — by category\n`/search amount > 100` — by amount\n`/search last 30 days` — by date range',
-      { parse_mode: 'Markdown' },
+    await ctx.editMessageText(
+      '🔍 *Search Transactions*\n\nChoose a filter:',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('📝 By Note', 'search:note').text('💰 Amount >', 'search:amount_gt').row()
+          .text('💰 Amount <', 'search:amount_lt').text('📅 Last 7 Days', 'search:days:7').row()
+          .text('📅 Last 30 Days', 'search:days:30').text('🏠 Menu', 'goto:menu'),
+      },
     );
   });
 
-  // ─── Menu: Category ───────────────────────────────────────────────────────
+  // ─── Search: immediate date-range results ─────────────────────────────────
 
-  bot.callbackQuery('menu:category', async (ctx) => {
-    await ctx.answerCallbackQuery();
-    await ctx.reply(
-      '📋 *Categories*\n\n`/category list` — view all\n`/category add Gaming expense` — add custom\n`/category delete Gaming` — remove',
-      { parse_mode: 'Markdown' },
+  bot.callbackQuery(/^search:days:(\d+)$/, async (ctx) => {
+    const days = parseInt(ctx.match[1]);
+    await ctx.answerCallbackQuery('Searching…');
+    const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
+    if (!user) return;
+
+    const since = new Date(Date.now() - days * 864e5);
+    const results = await ctx.prisma.transaction.findMany({
+      where: { userId: user.id, transactionDate: { gte: since } },
+      include: { category: true },
+      orderBy: { transactionDate: 'desc' },
+      take: 20,
+    });
+
+    await ctx.editMessageText(
+      formatSearchResults(results, `Last ${days} days`, user.currency),
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('🔍 Search Again', 'menu:search').text('🏠 Menu', 'goto:menu'),
+      },
     );
+  });
+
+  // ─── Search: prompt for text input ────────────────────────────────────────
+
+  bot.callbackQuery(/^search:(note|amount_gt|amount_lt)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const kind = ctx.match[1] as 'note' | 'amount_gt' | 'amount_lt';
+    const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
+    if (!user) return;
+
+    const prompt =
+      kind === 'note'       ? '📝 *Search by Note*\n\nType a keyword:' :
+      kind === 'amount_gt'  ? '💰 *Amount Greater Than*\n\nType a number:\n\n_Example: `100`_' :
+                              '💰 *Amount Less Than*\n\nType a number:\n\n_Example: `50`_';
+
+    const msgId = ctx.callbackQuery.message?.message_id;
+    await ConvService.setConv(ctx.prisma, user.id, `search:${kind}` as any, {
+      toDelete: msgId ? [msgId] : [],
+    });
+    await ctx.editMessageText(prompt, {
+      parse_mode: 'Markdown',
+      reply_markup: new InlineKeyboard().text('❌ Cancel', 'conv:cancel'),
+    });
   });
 
   // ─── Goto main menu ───────────────────────────────────────────────────────
@@ -300,7 +387,7 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
 
   bot.command('help', async (ctx) => {
     await ctx.reply(
-      `📖 *EI Bot Help*\n\n` +
+      `📖 *ចាយលុយ Report Bot — Help*\n\n` +
       `*Quick way:* Use the buttons from /start\n\n` +
       `*Commands:*\n` +
       `\`/income 500 salary\`\n` +
@@ -363,7 +450,7 @@ async function sendReportPDF(ctx: any, user: any, period: string) {
     transactions,
   });
 
-  const filename = `EIBot_Report_${label}.pdf`;
+  const filename = `ChhayLuy_${label}.pdf`;
   const net = totalIncome - totalExpenses;
 
   await ctx.replyWithDocument(

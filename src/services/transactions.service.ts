@@ -114,16 +114,6 @@ export async function search(prisma: PrismaClient, userId: number, query: string
     });
   }
 
-  if (q.startsWith('category ')) {
-    const catName = q.slice(9).trim();
-    return prisma.transaction.findMany({
-      where: { userId, category: { name: { contains: catName } } },
-      include: { category: true },
-      orderBy: { transactionDate: 'desc' },
-      take: 20,
-    });
-  }
-
   const amountMatch = q.match(/amount\s*([<>])\s*(\d+(?:\.\d+)?)/);
   if (amountMatch) {
     const op = amountMatch[1];
@@ -137,13 +127,7 @@ export async function search(prisma: PrismaClient, userId: number, query: string
   }
 
   return prisma.transaction.findMany({
-    where: {
-      userId,
-      OR: [
-        { note: { contains: query } },
-        { category: { name: { contains: query } } },
-      ],
-    },
+    where: { userId, note: { contains: query } },
     include: { category: true },
     orderBy: { transactionDate: 'desc' },
     take: 20,

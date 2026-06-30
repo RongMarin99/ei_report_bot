@@ -68,7 +68,7 @@ async function sendPDFReport(ctx: any, user: any, period: string) {
     transactions,
   });
 
-  const filename = `ei-bot-${period}-${now.format('YYYY-MM-DD')}.pdf`;
+  const filename = `ChhayLuy_${period}_${now.format('YYYY-MM-DD')}.pdf`;
   const net = totalIncome - totalExpenses;
 
   await ctx.replyWithDocument(

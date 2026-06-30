@@ -16,8 +16,7 @@
     "@prisma/client": "^5.20.0",
     "dayjs": "^1.11.13",
     "grammy": "^1.30.0",
-    "hono": "^4.6.0",
-    "pdf-lib": "^1.17.1"
+    "hono": "^4.6.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241022.0",

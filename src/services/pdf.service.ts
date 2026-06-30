@@ -1,15 +1,116 @@
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { fmtAmount, toBaseCurrency } from './transactions.service';
+/**
+ * Zero-dependency raw PDF builder.
+ * Standard Type1 fonts (Helvetica) are referenced by name — no binary font data embedded.
+ * Runs in microseconds vs pdf-lib's milliseconds — safe for CF Workers 10ms CPU limit.
+ */
 
-const C = {
-  blue:  rgb(0.18, 0.39, 0.75),
-  white: rgb(1, 1, 1),
-  gray:  rgb(0.82, 0.82, 0.82),
-  dark:  rgb(0.12, 0.12, 0.12),
-  green: rgb(0.05, 0.5, 0.2),
-  red:   rgb(0.7, 0.1, 0.1),
-  muted: rgb(0.5, 0.5, 0.5),
-};
+import { toBaseCurrency } from './transactions.service';
+
+// ─── Primitives ───────────────────────────────────────────────────────────────
+
+function esc(s: string): string {
+  return String(s)
+    .replace(/[^\x20-\x7E]/g, '')   // strip non-ASCII (KHR riel, emoji, etc.)
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)');
+}
+
+function fmtAmt(amount: number, currency: string): string {
+  if (currency === 'KHR') return `${Math.round(amount).toLocaleString()} KHR`;
+  return `${Math.abs(amount).toFixed(2)} ${currency}`;
+}
+
+type RGB = [number, number, number];
+const BLUE:  RGB = [0.18, 0.39, 0.75];
+const WHITE: RGB = [1, 1, 1];
+const GRAY:  RGB = [0.75, 0.75, 0.75];
+const DARK:  RGB = [0.12, 0.12, 0.12];
+const GREEN: RGB = [0.05, 0.5, 0.2];
+const RED:   RGB = [0.7, 0.1, 0.1];
+const MUTED: RGB = [0.5, 0.5, 0.5];
+
+function c(rgb: RGB, stroke = false): string {
+  return `${rgb[0].toFixed(3)} ${rgb[1].toFixed(3)} ${rgb[2].toFixed(3)} ${stroke ? 'RG' : 'rg'}`;
+}
+
+// ─── Page stream builder ──────────────────────────────────────────────────────
+
+class Page {
+  private ops: string[] = [];
+
+  rect(x: number, y: number, w: number, h: number, fill: RGB) {
+    this.ops.push(`${c(fill)} ${x} ${y} ${w} ${h} re f`);
+  }
+
+  line(x1: number, y1: number, x2: number, y2: number, color: RGB, lw = 0.5) {
+    this.ops.push(`${c(color, true)} ${lw} w ${x1} ${y1} m ${x2} ${y2} l S`);
+  }
+
+  text(s: string, x: number, y: number, size: number, bold: boolean, color: RGB) {
+    this.ops.push(`BT /${bold ? 'FB' : 'F1'} ${size} Tf ${c(color)} ${x} ${y} Td (${esc(s)}) Tj ET`);
+  }
+
+  stream(): string {
+    return this.ops.join('\n');
+  }
+}
+
+// ─── Multi-page PDF serializer ────────────────────────────────────────────────
+
+function buildPDF(pageList: Page[]): Uint8Array {
+  const N = pageList.length;
+  // Object ID layout (1-based):
+  // 1 = Catalog, 2 = Pages
+  // 3..3+N-1 = Page objects
+  // 3+N..3+2N-1 = Content streams
+  // 3+2N = Helvetica, 3+2N+1 = Helvetica-Bold
+  const TOTAL = 3 + 2 * N + 2;
+  const pIds  = Array.from({ length: N }, (_, i) => 3 + i);
+  const sIds  = Array.from({ length: N }, (_, i) => 3 + N + i);
+  const fReg  = 3 + 2 * N;
+  const fBold = 3 + 2 * N + 1;
+
+  let pdf = '%PDF-1.4\n';
+  const off = new Array(TOTAL).fill(0);
+
+  const wo = (id: number, body: string) => {
+    off[id] = pdf.length;
+    pdf += `${id} 0 obj\n${body}\nendobj\n`;
+  };
+
+  wo(1, `<</Type /Catalog /Pages 2 0 R>>`);
+  wo(2, `<</Type /Pages /Kids [${pIds.map(id => `${id} 0 R`).join(' ')}] /Count ${N}>>`);
+
+  for (let i = 0; i < N; i++) {
+    wo(pIds[i],
+      `<</Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ` +
+      `/Resources <</Font <</F1 ${fReg} 0 R /FB ${fBold} 0 R>>>> ` +
+      `/Contents ${sIds[i]} 0 R>>`,
+    );
+  }
+
+  for (let i = 0; i < N; i++) {
+    const s = pageList[i].stream();
+    off[sIds[i]] = pdf.length;
+    pdf += `${sIds[i]} 0 obj\n<</Length ${s.length}>>\nstream\n${s}\nendstream\nendobj\n`;
+  }
+
+  wo(fReg,  `<</Type /Font /Subtype /Type1 /BaseFont /Helvetica      /Encoding /WinAnsiEncoding>>`);
+  wo(fBold, `<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>`);
+
+  const xrefOff = pdf.length;
+  pdf += `xref\n0 ${TOTAL}\n`;
+  pdf += `0000000000 65535 f\r\n`;
+  for (let id = 1; id < TOTAL; id++) {
+    pdf += `${String(off[id]).padStart(10, '0')} 00000 n\r\n`;
+  }
+  pdf += `trailer\n<</Size ${TOTAL} /Root 1 0 R>>\nstartxref\n${xrefOff}\n%%EOF`;
+
+  return new TextEncoder().encode(pdf);
+}
+
+// ─── Report layout ────────────────────────────────────────────────────────────
 
 export async function generateReportPDF(params: {
   title: string;
@@ -20,17 +121,12 @@ export async function generateReportPDF(params: {
 }): Promise<Uint8Array> {
   const { title, dateRange, baseCurrency, exchangeRate } = params;
 
-  // Embed fonts once (standard fonts = no binary embed = fast)
-  const doc = await PDFDocument.create();
-  const font = await doc.embedFont(StandardFonts.Helvetica);
-  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-
   const rows = params.transactions.map((t) => ({
     date: new Date(t.transactionDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
     type: t.type as string,
-    category: (t.category?.name ?? 'Other').slice(0, 18),
+    category: esc((t.category?.name ?? 'Other').slice(0, 16)),
     amount: toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate),
-    note: (t.note ?? '').slice(0, 35),
+    note: esc((t.note ?? '').slice(0, 32)),
   }));
 
   const income   = rows.filter((r) => r.type === 'income');
@@ -40,79 +136,69 @@ export async function generateReportPDF(params: {
   const net      = totalIn - totalEx;
   const savings  = totalIn > 0 ? ((net / totalIn) * 100).toFixed(1) : '0.0';
 
-  const W = 595, H = 842, L = 40, R = W - 40;
-  const pages: ReturnType<typeof doc.addPage>[] = [];
+  const pages: Page[] = [];
+  let pg = new Page();
+  pages.push(pg);
 
-  function newPage() {
-    const p = doc.addPage([W, H]);
-    pages.push(p);
-    return p;
-  }
-
-  let page = newPage();
-  let y = H - 40;
+  const L = 40, R = 555, W = 515;
+  let y = 800;
 
   function checkSpace(need: number) {
-    if (y - need < 50) { page = newPage(); y = H - 40; }
+    if (y - need < 50) {
+      pg = new Page();
+      pages.push(pg);
+      y = 800;
+    }
   }
 
-  // ── Header bar ────────────────────────────────────────────────────────────
-  page.drawRectangle({ x: L, y: y - 50, width: R - L, height: 50, color: C.blue });
-  page.drawText('EI BOT REPORT', { x: L + 10, y: y - 20, size: 14, font: bold, color: C.white });
-  page.drawText(title,           { x: L + 10, y: y - 36, size: 10, font,       color: C.white });
-  page.drawText(dateRange,       { x: R - 200, y: y - 20, size: 8,  font,      color: rgb(0.8, 0.9, 1) });
-  page.drawText(`Rate: 1 USD = ${Math.round(exchangeRate).toLocaleString()} KHR  |  Base: ${baseCurrency}`,
-    { x: R - 200, y: y - 34, size: 8, font, color: rgb(0.8, 0.9, 1) });
-  y -= 62;
+  // ── Header ──────────────────────────────────────────────────────────────────
+  pg.rect(L, y - 48, W, 48, BLUE);
+  pg.text('ChhayLuy Report Bot', L + 10, y - 18, 14, true, WHITE);
+  pg.text(title,            L + 10, y - 34, 10, false, WHITE);
+  pg.text(dateRange,        R - 190, y - 18, 8,  false, [0.8, 0.9, 1]);
+  pg.text(`Base: ${baseCurrency}  Rate: 1 USD = ${Math.round(exchangeRate).toLocaleString()} KHR`,
+    R - 190, y - 32, 7.5, false, [0.8, 0.9, 1]);
+  y -= 60;
 
-  // ── Section ───────────────────────────────────────────────────────────────
+  // ── Section renderer ─────────────────────────────────────────────────────────
   function drawSection(label: string, txRows: typeof rows, total: number, isExpense: boolean) {
-    checkSpace(50);
-    const accent = isExpense ? C.red : C.green;
+    const accent: RGB = isExpense ? RED : GREEN;
 
-    // Section title line
-    page.drawLine({ start: { x: L, y }, end: { x: R, y }, thickness: 1, color: accent });
+    checkSpace(48);
+    pg.line(L, y, R, y, accent, 1.2);
     y -= 16;
-    page.drawText(`${label}  (${txRows.length} items)`, { x: L, y, size: 10, font: bold, color: accent });
+    pg.text(`${label}  (${txRows.length} items)`, L, y, 10, true, accent);
     y -= 18;
 
     if (txRows.length === 0) {
-      page.drawText('No transactions.', { x: L + 8, y, size: 9, font, color: C.muted });
+      pg.text('No transactions.', L + 8, y, 9, false, MUTED);
       y -= 20;
       return;
     }
 
     // Column headers
-    page.drawText('Date',     { x: L,       y, size: 8, font: bold, color: C.muted });
-    page.drawText('Category', { x: L + 58,  y, size: 8, font: bold, color: C.muted });
-    page.drawText('Amount',   { x: L + 160, y, size: 8, font: bold, color: C.muted });
-    page.drawText('Note',     { x: L + 255, y, size: 8, font: bold, color: C.muted });
+    pg.text('Date',     L,       y, 8, true, MUTED);
+    pg.text('Category', L + 58,  y, 8, true, MUTED);
+    pg.text('Amount',   L + 162, y, 8, true, MUTED);
+    pg.text('Note',     L + 258, y, 8, true, MUTED);
     y -= 4;
-    page.drawLine({ start: { x: L, y }, end: { x: R, y }, thickness: 0.4, color: C.gray });
+    pg.line(L, y, R, y, GRAY, 0.4);
     y -= 14;
 
     for (const r of txRows) {
-      checkSpace(16);
-      const amtStr = baseCurrency === 'KHR'
-        ? `${Math.round(r.amount).toLocaleString()} KHR`
-        : `${r.amount.toFixed(2)} ${baseCurrency}`;
-
-      page.drawText(r.date,     { x: L,       y, size: 8.5, font, color: C.dark });
-      page.drawText(r.category, { x: L + 58,  y, size: 8.5, font, color: C.dark });
-      page.drawText(amtStr,     { x: L + 160, y, size: 8.5, font, color: accent });
-      page.drawText(r.note,     { x: L + 255, y, size: 8.5, font, color: C.muted });
+      checkSpace(15);
+      pg.text(r.date,           L,       y, 8.5, false, DARK);
+      pg.text(r.category,       L + 58,  y, 8.5, false, DARK);
+      pg.text(fmtAmt(r.amount, baseCurrency), L + 162, y, 8.5, false, accent);
+      if (r.note) pg.text(r.note, L + 258, y, 8.5, false, MUTED);
       y -= 15;
     }
 
-    // Total row
-    checkSpace(20);
-    page.drawLine({ start: { x: L, y }, end: { x: R, y }, thickness: 0.4, color: C.gray });
+    checkSpace(18);
+    pg.line(L, y, R, y, GRAY, 0.4);
     y -= 14;
-    const totStr = baseCurrency === 'KHR'
-      ? `${Math.round(total).toLocaleString()} KHR`
-      : `${total.toFixed(2)} ${baseCurrency}`;
-    page.drawText('TOTAL', { x: L, y, size: 9, font: bold, color: C.dark });
-    page.drawText(totStr,  { x: L + 160, y, size: 9, font: bold, color: accent });
+    pg.text('TOTAL', L, y, 9, true, DARK);
+    pg.text(fmtAmt(total, baseCurrency), L + 162, y, 9, true, accent);
     y -= 22;
   }
 
@@ -121,38 +207,32 @@ export async function generateReportPDF(params: {
   drawSection('EXPENSES', expenses, totalEx, true);
   y -= 12;
 
-  // ── Summary ───────────────────────────────────────────────────────────────
-  checkSpace(80);
-  page.drawLine({ start: { x: L, y }, end: { x: R, y }, thickness: 1, color: C.blue });
+  // ── Summary ──────────────────────────────────────────────────────────────────
+  checkSpace(75);
+  pg.line(L, y, R, y, BLUE, 1.2);
   y -= 16;
-  page.drawText('SUMMARY', { x: L, y, size: 10, font: bold, color: C.blue });
+  pg.text('SUMMARY', L, y, 10, true, BLUE);
   y -= 18;
 
-  const fmt = (n: number) => baseCurrency === 'KHR'
-    ? `${Math.round(n).toLocaleString()} KHR`
-    : `${n.toFixed(2)} ${baseCurrency}`;
+  const summaryData = [
+    { label: 'Total Income',   val: fmtAmt(totalIn, baseCurrency), color: GREEN },
+    { label: 'Total Expenses', val: fmtAmt(totalEx, baseCurrency), color: RED },
+    { label: 'Net Balance',    val: fmtAmt(net, baseCurrency),     color: net >= 0 ? GREEN : RED },
+    { label: 'Savings Rate',   val: `${savings}%`,                  color: DARK },
+  ] as const;
 
-  const sumRows = [
-    { label: 'Total Income',   val: fmt(totalIn),  color: C.green },
-    { label: 'Total Expenses', val: fmt(totalEx),  color: C.red },
-    { label: 'Net Balance',    val: fmt(net),       color: net >= 0 ? C.green : C.red },
-    { label: 'Savings Rate',   val: `${savings}%`, color: C.dark },
-  ];
-
-  for (const s of sumRows) {
-    page.drawText(s.label, { x: L,       y, size: 10, font: bold, color: C.dark });
-    page.drawText(s.val,   { x: L + 220, y, size: 10, font: bold, color: s.color });
+  for (const s of summaryData) {
+    pg.text(s.label, L,       y, 10, true,  DARK);
+    pg.text(s.val,   L + 220, y, 10, true,  s.color as RGB);
     y -= 18;
   }
 
-  // ── Footer on every page ──────────────────────────────────────────────────
-  const total = doc.getPageCount();
-  for (let i = 0; i < total; i++) {
-    const p = doc.getPage(i);
-    p.drawLine({ start: { x: L, y: 30 }, end: { x: R, y: 30 }, thickness: 0.5, color: C.gray });
-    p.drawText(`EI Bot  |  ${title}  |  Page ${i + 1} of ${total}`,
-      { x: L, y: 18, size: 7.5, font, color: C.muted });
-  }
+  // ── Footer on every page ─────────────────────────────────────────────────────
+  const totalPages = pages.length;
+  pages.forEach((p, i) => {
+    p.line(L, 30, R, 30, GRAY, 0.5);
+    p.text(`ChhayLuy Report Bot  |  ${title}  |  Page ${i + 1} of ${totalPages}`, L, 16, 7.5, false, MUTED);
+  });
 
-  return doc.save();
+  return buildPDF(pages);
 }

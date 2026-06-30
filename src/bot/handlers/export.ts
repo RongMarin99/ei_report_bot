@@ -1,28 +1,36 @@
-import { Bot } from 'grammy';
-import { InputFile } from 'grammy';
+import { Bot, InputFile } from 'grammy';
 import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
-import * as ExportService from '../../services/export.service';
 
 export function registerExportHandlers(bot: Bot<BotContext>) {
   bot.command('export', async (ctx) => {
-    const parts = (ctx.message?.text ?? '').split(/\s+/).slice(1);
-    const format = parts[0]?.toLowerCase() as 'csv' | 'xlsx' | 'pdf';
-
-    if (!format || !['csv', 'xlsx', 'pdf'].includes(format)) {
-      return ctx.reply('Usage: /export <format>\n\nFormats: csv, xlsx, pdf\nExample: /export csv');
-    }
-
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
     if (!user) return ctx.reply('Please /start first.');
 
-    await ctx.reply(`⏳ Generating ${format.toUpperCase()} export...`);
+    const transactions = await ctx.prisma.transaction.findMany({
+      where: { userId: user.id },
+      include: { category: true },
+      orderBy: { transactionDate: 'desc' },
+    });
 
-    try {
-      const result = await ExportService.exportTransactions(ctx.prisma, user.id, format);
-      await ctx.replyWithDocument(new InputFile(result.buffer, result.filename));
-    } catch (e: any) {
-      await ctx.reply(`❌ Export failed: ${e.message}`);
-    }
+    const headers = ['Date', 'Type', 'Category', 'Amount', 'Currency', 'Note'];
+    const lines = [
+      headers.join(','),
+      ...transactions.map((t) => [
+        new Date(t.transactionDate).toLocaleDateString('en-GB'),
+        t.type,
+        (t as any).category?.name ?? 'Other',
+        t.amount.toFixed(2),
+        t.currency,
+        (t.note ?? '').replace(/"/g, '""'),
+      ].map((v) => `"${v}"`).join(',')),
+    ];
+
+    const now = new Date().toISOString().split('T')[0];
+    const filename = `ChhayLuy_Transactions_${now}.csv`;
+    await ctx.replyWithDocument(
+      new InputFile(Buffer.from(lines.join('\n'), 'utf-8'), filename),
+      { caption: `📤 *${transactions.length} transactions exported*`, parse_mode: 'Markdown' },
+    );
   });
 }

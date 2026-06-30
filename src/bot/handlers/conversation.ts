@@ -5,7 +5,7 @@ import * as ConvService from '../../services/conversation.service';
 import * as TransactionsService from '../../services/transactions.service';
 import * as CategoriesService from '../../services/categories.service';
 import * as BudgetsService from '../../services/budgets.service';
-import { mainMenuKeyboard } from './start';
+import { mainMenuKeyboard, formatSearchResults } from './start';
 
 function parseAmountInput(text: string): number | null {
   const amount = parseFloat(text.replace(/,/g, '').trim());
@@ -129,9 +129,52 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
     // ── Description step ─────────────────────────────────────────────────────
 
     if (conv.step === 'expense:desc' || conv.step === 'income:desc') {
-      // Track user's description message for cleanup
       const toDelete = [...(conv.data.toDelete ?? []), userMsgId];
       await saveTransaction(ctx, user, { ...conv.data, toDelete }, text);
+      return;
+    }
+
+    // ── Search steps ──────────────────────────────────────────────────────────
+
+    if (conv.step === 'search:note' || conv.step === 'search:amount_gt' || conv.step === 'search:amount_lt') {
+      await ConvService.clearConv(ctx.prisma, user.id);
+      if (conv.data.toDelete?.length) await deleteMessages(ctx, conv.data.toDelete);
+      await ctx.deleteMessage().catch(() => null);
+
+      let results: any[] = [];
+      let label = '';
+
+      if (conv.step === 'search:note') {
+        label = `Note: "${text}"`;
+        results = await ctx.prisma.transaction.findMany({
+          where: { userId: user.id, note: { contains: text } },
+          include: { category: true },
+          orderBy: { transactionDate: 'desc' },
+          take: 20,
+        });
+      } else {
+        const amount = parseFloat(text.replace(/,/g, ''));
+        if (isNaN(amount) || amount <= 0) {
+          await ctx.reply('❌ Enter a valid number.', {
+            reply_markup: new InlineKeyboard().text('🔍 Search Again', 'menu:search').text('🏠 Menu', 'goto:menu'),
+          });
+          return;
+        }
+        const gt = conv.step === 'search:amount_gt';
+        label = `Amount ${gt ? '>' : '<'} ${amount}`;
+        results = await ctx.prisma.transaction.findMany({
+          where: { userId: user.id, amount: gt ? { gt: amount } : { lt: amount } },
+          include: { category: true },
+          orderBy: { transactionDate: 'desc' },
+          take: 20,
+        });
+      }
+
+      await ctx.reply(formatSearchResults(results, label, user.currency), {
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('🔍 Search Again', 'menu:search').text('🏠 Menu', 'goto:menu'),
+      });
     }
   });
 

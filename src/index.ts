@@ -7,7 +7,7 @@ import { handleScheduled } from './scheduled/cron';
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.get('/', (c) => c.json({ status: 'ok', bot: 'EI Bot' }));
+app.get('/', (c) => c.json({ status: 'ok', bot: 'ចាយលុយ Report Bot' }));
 
 app.get('/setup', async (c) => {
   const env = c.env;
