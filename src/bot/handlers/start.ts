@@ -71,13 +71,14 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
 
   bot.callbackQuery('menu:income', async (ctx) => {
     await ctx.answerCallbackQuery();
-    const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
-    if (!user) return;
-
-    await ConvService.setConv(ctx.prisma, user.id, 'income:amount');
     await ctx.reply(
-      `💰 *Add Income*\n\nHow much did you receive?\n\n_Type an amount:_\n\`500\`  →  ${user.currency}\n\`500 USD\`\n\`2000000 KHR\`\n\nType /cancel to go back.`,
-      { parse_mode: 'Markdown' },
+      '💰 *Add Income*\n\nChoose currency:',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('🇺🇸 USD', 'txn:income:USD')
+          .text('🇰🇭 KHR (Riel)', 'txn:income:KHR'),
+      },
     );
   });
 
@@ -85,12 +86,33 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
 
   bot.callbackQuery('menu:expense', async (ctx) => {
     await ctx.answerCallbackQuery();
+    await ctx.reply(
+      '💸 *Add Expense*\n\nChoose currency:',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('🇺🇸 USD', 'txn:expense:USD')
+          .text('🇰🇭 KHR (Riel)', 'txn:expense:KHR'),
+      },
+    );
+  });
+
+  // ─── Currency selected → ask amount ───────────────────────────────────────
+
+  bot.callbackQuery(/^txn:(expense|income):(USD|KHR)$/, async (ctx) => {
+    const type = ctx.match[1] as 'expense' | 'income';
+    const currency = ctx.match[2];
+    await ctx.answerCallbackQuery();
+
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
     if (!user) return;
 
-    await ConvService.setConv(ctx.prisma, user.id, 'expense:amount');
-    await ctx.reply(
-      `💸 *Add Expense*\n\nHow much did you spend?\n\n_Type an amount:_\n\`5\`  →  ${user.currency}\n\`5 USD\`\n\`20000 KHR\`\n\nType /cancel to go back.`,
+    await ConvService.setConv(ctx.prisma, user.id, `${type}:amount`, { currency, type });
+
+    const icon = type === 'expense' ? '💸' : '💰';
+    const hint = currency === 'KHR' ? '20000' : '5';
+    await ctx.editMessageText(
+      `${icon} *${type === 'expense' ? 'Expense' : 'Income'}* — ${currency}\n\nHow much? Type the amount:\n\n_Example: \`${hint}\`_\n\nType /cancel to go back.`,
       { parse_mode: 'Markdown' },
     );
   });

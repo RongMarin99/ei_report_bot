@@ -7,19 +7,10 @@ import * as CategoriesService from '../../services/categories.service';
 import * as BudgetsService from '../../services/budgets.service';
 import { mainMenuKeyboard } from './start';
 
-const CURRENCIES = ['USD', 'KHR'];
-
-function parseAmountInput(text: string, defaultCurrency: string): { amount: number; currency: string } | null {
-  const clean = text.replace(/,/g, '').trim();
-  const parts = clean.split(/\s+/);
-  const amount = parseFloat(parts[0]);
+function parseAmountInput(text: string): number | null {
+  const amount = parseFloat(text.replace(/,/g, '').trim());
   if (isNaN(amount) || amount <= 0) return null;
-
-  let currency = defaultCurrency;
-  if (parts[1] && CURRENCIES.includes(parts[1].toUpperCase())) {
-    currency = parts[1].toUpperCase();
-  }
-  return { amount, currency };
+  return amount;
 }
 
 export function registerConversationHandlers(bot: Bot<BotContext>) {
@@ -59,24 +50,26 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
     const rate = (user as any).exchangeRate ?? 4100;
 
     if (conv.step === 'expense:amount' || conv.step === 'income:amount') {
-      const parsed = parseAmountInput(text, user.currency);
-      if (!parsed) {
+      const amount = parseAmountInput(text);
+      if (!amount) {
         return ctx.reply(
-          `❌ Invalid amount.\n\nEnter a number:\n\`5\`   \`5 USD\`   \`20000 KHR\``,
+          `❌ Enter a number only.\n\nExamples: \`5\`  \`20000\`  \`1500.50\``,
           { parse_mode: 'Markdown' },
         );
       }
 
       const type = conv.step.split(':')[0] as 'expense' | 'income';
-      await ConvService.setConv(ctx.prisma, user.id, `${type}:desc`, { amount: parsed.amount, currency: parsed.currency, type });
+      const currency = conv.data.currency ?? user.currency;
+      await ConvService.setConv(ctx.prisma, user.id, `${type}:desc`, { amount, currency, type });
 
-      const displayAmt = TransactionsService.fmtAmount(parsed.amount, parsed.currency);
-      const baseAmt = parsed.currency !== user.currency
-        ? ` ≈ ${TransactionsService.fmtAmount(TransactionsService.toBaseCurrency(parsed.amount, parsed.currency, user.currency, rate), user.currency)}`
+      const displayAmt = TransactionsService.fmtAmount(amount, currency);
+      const baseAmt = currency !== user.currency
+        ? ` ≈ ${TransactionsService.fmtAmount(TransactionsService.toBaseCurrency(amount, currency, user.currency, rate), user.currency)}`
         : '';
 
+      const icon = type === 'expense' ? '💸' : '💰';
       await ctx.reply(
-        `${type === 'expense' ? '💸' : '💰'} *${displayAmt}*${baseAmt}\n\nAdd a description for this ${type}:`,
+        `${icon} *${displayAmt}*${baseAmt}\n\nAdd a description:`,
         {
           parse_mode: 'Markdown',
           reply_markup: new InlineKeyboard().text('⏭️ Skip', 'conv:skip'),
