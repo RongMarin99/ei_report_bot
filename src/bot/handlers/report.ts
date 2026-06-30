@@ -21,7 +21,8 @@ export function registerReportHandlers(bot: Bot<BotContext>) {
 
     await ctx.reply('⏳ Generating report...');
 
-    const report = await ReportsService.generateReport(ctx.prisma, user.id, period, user.timezone, user.currency);
+    const rate = (user as any).exchangeRate ?? 4100;
+    const report = await ReportsService.generateReport(ctx.prisma, user.id, period, user.timezone, user.currency, rate);
     await ctx.reply(report, { parse_mode: 'Markdown' });
   });
 }

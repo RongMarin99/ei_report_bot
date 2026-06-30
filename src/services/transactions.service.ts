@@ -6,6 +6,19 @@ import timezone from 'dayjs/plugin/timezone';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+// KHR per 1 USD
+export function toBaseCurrency(amount: number, txCurrency: string, baseCurrency: string, rate: number): number {
+  if (txCurrency === baseCurrency) return amount;
+  if (baseCurrency === 'USD' && txCurrency === 'KHR') return amount / rate;
+  if (baseCurrency === 'KHR' && txCurrency === 'USD') return amount * rate;
+  return amount;
+}
+
+export function fmtAmount(amount: number, currency: string): string {
+  if (currency === 'KHR') return `${Math.round(amount).toLocaleString()} ៛`;
+  return `${amount.toFixed(2)} ${currency}`;
+}
+
 export async function create(
   prisma: PrismaClient,
   data: {
@@ -51,6 +64,8 @@ export async function getSummary(
   userId: number,
   period: string,
   tz: string,
+  baseCurrency: string = 'USD',
+  exchangeRate: number = 4100,
 ) {
   const { start, end } = getDateRange(period, tz);
   const transactions = await prisma.transaction.findMany({
@@ -61,10 +76,10 @@ export async function getSummary(
 
   const totalIncome = transactions
     .filter((t) => t.type === 'income')
-    .reduce((s, t) => s + t.amount, 0);
+    .reduce((s, t) => s + toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate), 0);
   const totalExpenses = transactions
     .filter((t) => t.type === 'expense')
-    .reduce((s, t) => s + t.amount, 0);
+    .reduce((s, t) => s + toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate), 0);
 
   return { transactions, totalIncome, totalExpenses, netBalance: totalIncome - totalExpenses };
 }
@@ -74,13 +89,14 @@ export async function getMonthlySpentByCategory(
   userId: number,
   categoryId: number,
   period: string = 'monthly',
+  baseCurrency: string = 'USD',
+  exchangeRate: number = 4100,
 ) {
   const { start, end } = getDateRange(period, 'UTC');
-  const result = await prisma.transaction.aggregate({
+  const txns = await prisma.transaction.findMany({
     where: { userId, categoryId, type: 'expense', transactionDate: { gte: start, lte: end } },
-    _sum: { amount: true },
   });
-  return result._sum.amount ?? 0;
+  return txns.reduce((s, t) => s + toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate), 0);
 }
 
 export async function search(prisma: PrismaClient, userId: number, query: string) {
@@ -101,10 +117,7 @@ export async function search(prisma: PrismaClient, userId: number, query: string
   if (q.startsWith('category ')) {
     const catName = q.slice(9).trim();
     return prisma.transaction.findMany({
-      where: {
-        userId,
-        category: { name: { contains: catName } },
-      },
+      where: { userId, category: { name: { contains: catName } } },
       include: { category: true },
       orderBy: { transactionDate: 'desc' },
       take: 20,
@@ -116,10 +129,7 @@ export async function search(prisma: PrismaClient, userId: number, query: string
     const op = amountMatch[1];
     const val = parseFloat(amountMatch[2]);
     return prisma.transaction.findMany({
-      where: {
-        userId,
-        amount: op === '>' ? { gt: val } : { lt: val },
-      },
+      where: { userId, amount: op === '>' ? { gt: val } : { lt: val } },
       include: { category: true },
       orderBy: { transactionDate: 'desc' },
       take: 20,
@@ -140,7 +150,7 @@ export async function search(prisma: PrismaClient, userId: number, query: string
   });
 }
 
-export async function getStats(prisma: PrismaClient, userId: number, tz: string) {
+export async function getStats(prisma: PrismaClient, userId: number, tz: string, baseCurrency: string = 'USD', exchangeRate: number = 4100) {
   const totalTransactions = await prisma.transaction.count({ where: { userId } });
 
   const firstTx = await prisma.transaction.findFirst({
@@ -148,17 +158,13 @@ export async function getStats(prisma: PrismaClient, userId: number, tz: string)
     orderBy: { transactionDate: 'asc' },
   });
 
-  const allExpenses = await prisma.transaction.aggregate({
-    where: { userId, type: 'expense' },
-    _sum: { amount: true },
-  });
-  const allIncome = await prisma.transaction.aggregate({
-    where: { userId, type: 'income' },
-    _sum: { amount: true },
-  });
-
-  const totalExpenses = allExpenses._sum.amount ?? 0;
-  const totalIncome = allIncome._sum.amount ?? 0;
+  const allTxns = await prisma.transaction.findMany({ where: { userId } });
+  const totalExpenses = allTxns
+    .filter((t) => t.type === 'expense')
+    .reduce((s, t) => s + toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate), 0);
+  const totalIncome = allTxns
+    .filter((t) => t.type === 'income')
+    .reduce((s, t) => s + toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate), 0);
 
   const daysSinceFirst = firstTx
     ? Math.max(1, dayjs().diff(dayjs(firstTx.transactionDate), 'day'))

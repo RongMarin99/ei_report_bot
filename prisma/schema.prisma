@@ -15,9 +15,10 @@ model User {
   firstName  String?  @map("first_name")
   currency   String   @default("USD")
   timezone   String   @default("UTC")
-  language   String   @default("en")
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
+  language     String   @default("en")
+  exchangeRate Float    @default(4100) @map("exchange_rate")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   transactions          Transaction[]
   categories            Category[]

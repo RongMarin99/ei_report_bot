@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "exchange_rate" REAL NOT NULL DEFAULT 4100;

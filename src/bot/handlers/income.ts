@@ -4,31 +4,43 @@ import * as UsersService from '../../services/users.service';
 import * as TransactionsService from '../../services/transactions.service';
 import * as CategoriesService from '../../services/categories.service';
 
+const CURRENCIES = ['USD', 'KHR'];
+
 export function registerIncomeHandlers(bot: Bot<BotContext>) {
   bot.command('income', async (ctx) => {
     const text = ctx.message?.text ?? '';
     const parts = text.split(/\s+/).slice(1);
 
     if (parts.length < 1) {
-      return ctx.reply('Usage: /income <amount> <note>\nExample: /income 500 salary');
+      return ctx.reply(
+        'Usage: /income <amount> [USD|KHR] <note>\n\n' +
+        'Examples:\n/income 500 salary\n/income 500 USD salary\n/income 2000000 KHR rent',
+      );
     }
 
     const amount = parseFloat(parts[0]);
     if (isNaN(amount) || amount <= 0) {
-      return ctx.reply('❌ Invalid amount. Use a positive number.\nExample: /income 500 salary');
+      return ctx.reply('❌ Invalid amount.\nExample: /income 500 salary');
     }
 
-    const note = parts.slice(1).join(' ') || '';
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
-    if (!user) return ctx.reply('Please /start first to set up your account.');
+    if (!user) return ctx.reply('Please /start first.');
+
+    let currency = user.currency;
+    let noteStart = 1;
+    if (parts[1] && CURRENCIES.includes(parts[1].toUpperCase())) {
+      currency = parts[1].toUpperCase();
+      noteStart = 2;
+    }
+    const note = parts.slice(noteStart).join(' ') || '';
 
     const category = await CategoriesService.findBestMatch(ctx.prisma, user.id, note, 'income');
 
-    const tx = await TransactionsService.create(ctx.prisma, {
+    await TransactionsService.create(ctx.prisma, {
       userId: user.id,
       type: 'income',
       amount,
-      currency: user.currency,
+      currency,
       categoryId: category?.id,
       note,
       transactionDate: new Date(),
@@ -36,14 +48,17 @@ export function registerIncomeHandlers(bot: Bot<BotContext>) {
 
     const icon = category?.icon ?? '💰';
     const catName = category?.name ?? 'Other';
-    const date = new Date().toLocaleDateString();
+    const displayAmt = TransactionsService.fmtAmount(amount, currency);
 
-    await ctx.reply(
-      `✅ Income recorded!\n\n` +
-      `${icon} ${catName}\n` +
-      `Amount: ${user.currency} ${amount.toFixed(2)}\n` +
-      (note ? `Note: ${note}\n` : '') +
-      `Date: ${date}`,
-    );
+    let reply = `✅ Income recorded!\n\n${icon} ${catName}\nAmount: ${displayAmt}`;
+    if (note) reply += `\nNote: ${note}`;
+
+    if (currency !== user.currency) {
+      const rate = (user as any).exchangeRate ?? 4100;
+      const baseAmt = TransactionsService.toBaseCurrency(amount, currency, user.currency, rate);
+      reply += `\n≈ ${TransactionsService.fmtAmount(baseAmt, user.currency)}`;
+    }
+
+    await ctx.reply(reply);
   });
 }

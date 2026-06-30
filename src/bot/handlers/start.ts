@@ -3,6 +3,33 @@ import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
 import * as CategoriesService from '../../services/categories.service';
 
+export function mainMenu(name: string) {
+  return {
+    text:
+      `👋 Welcome back, ${name}!\n\n` +
+      `What do you want to do?`,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '💰 Add Income', callback_data: 'menu:income' },
+          { text: '💸 Add Expense', callback_data: 'menu:expense' },
+        ],
+        [
+          { text: '📊 Report', callback_data: 'menu:report' },
+          { text: '📈 Stats', callback_data: 'menu:stats' },
+        ],
+        [
+          { text: '💼 Budget', callback_data: 'menu:budget' },
+          { text: '⚙️ Settings', callback_data: 'menu:settings' },
+        ],
+        [
+          { text: '❓ Help', callback_data: 'menu:help' },
+        ],
+      ],
+    },
+  };
+}
+
 export function registerStartHandlers(bot: Bot<BotContext>) {
   bot.command('start', async (ctx) => {
     const telegramId = BigInt(ctx.from!.id);
@@ -10,47 +37,32 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
 
     if (!user) {
       await ctx.reply(
-        '👋 Welcome to EI Bot!\n\nI\'ll help you track your income and expenses.\n\nChoose your currency:',
+        '👋 Welcome to *EI Bot*!\n\nTrack income & expenses easily.\n\nFirst, choose your currency:',
         {
+          parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
               [
-                { text: '🇺🇸 USD', callback_data: 'reg:USD' },
-                { text: '🇰🇭 KHR', callback_data: 'reg:KHR' },
-                { text: '🇹🇭 THB', callback_data: 'reg:THB' },
-              ],
-              [
-                { text: '🇪🇺 EUR', callback_data: 'reg:EUR' },
-                { text: '🇬🇧 GBP', callback_data: 'reg:GBP' },
+                { text: '🇺🇸 USD (Dollar)', callback_data: 'reg:USD' },
+                { text: '🇰🇭 KHR (Riel)', callback_data: 'reg:KHR' },
               ],
             ],
           },
         },
       );
     } else {
-      await ctx.reply(
-        `Welcome back, ${ctx.from!.first_name}! 👋\n\n` +
-        `💰 /income <amount> <note>\n` +
-        `💸 /expense <amount> <note>\n` +
-        `📊 /report daily|weekly|monthly\n` +
-        `📈 /stats\n` +
-        `💼 /budget\n` +
-        `📋 /category\n` +
-        `🔄 /recurring\n` +
-        `⏰ /remind\n` +
-        `🔍 /search <query>\n` +
-        `📤 /export csv|xlsx|pdf\n` +
-        `⚙️ /settings\n` +
-        `❓ /help`,
-      );
+      const m = mainMenu(ctx.from!.first_name ?? 'there');
+      await ctx.reply(m.text, { parse_mode: 'Markdown', reply_markup: m.reply_markup });
     }
   });
 
+  // --- Registration flow ---
   bot.callbackQuery(/^reg:([A-Z]+)$/, async (ctx) => {
     const currency = ctx.match[1];
     await ctx.editMessageText(
-      `Currency: ${currency} ✅\n\nChoose your timezone:`,
+      `Currency: *${currency}* ✅\n\nChoose your timezone:`,
       {
+        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [
@@ -76,8 +88,9 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     const timezone = ctx.match[1];
     const currency = ctx.match[2];
     await ctx.editMessageText(
-      `Timezone: ${timezone} ✅\n\nChoose your language:`,
+      `Timezone: *${timezone}* ✅\n\nChoose your language:`,
       {
+        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [
@@ -107,22 +120,72 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
 
     await CategoriesService.seedDefaultCategories(ctx.prisma, user.id);
 
+    const m = mainMenu(ctx.from!.first_name ?? 'there');
     await ctx.editMessageText(
-      `🎉 Setup complete!\n\n💱 Currency: ${currency}\n🕐 Timezone: ${timezone}\n\nUse /help to see all commands.`,
+      `🎉 *Setup complete!*\n\n💱 Currency: ${currency}\n🕐 Timezone: ${timezone}\n\n${m.text}`,
+      { parse_mode: 'Markdown', reply_markup: m.reply_markup },
     );
     await ctx.answerCallbackQuery();
+  });
+
+  // --- Main menu callbacks ---
+  bot.callbackQuery('menu:income', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      '💰 *Add Income*\n\nSend: `/income <amount> <note>`\n\nExamples:\n`/income 500 salary`\n`/income 50 freelance`',
+      { parse_mode: 'Markdown' },
+    );
+  });
+
+  bot.callbackQuery('menu:expense', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      '💸 *Add Expense*\n\nSend: `/expense <amount> <note>`\n\nExamples:\n`/expense 5 coffee`\n`/expense 120 groceries`\n`/expense 20 transport`',
+      { parse_mode: 'Markdown' },
+    );
+  });
+
+  bot.callbackQuery('menu:report', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      '📊 *Reports*\n\n`/report daily`\n`/report weekly`\n`/report monthly`\n`/report quarterly`\n`/report yearly`',
+      { parse_mode: 'Markdown' },
+    );
+  });
+
+  bot.callbackQuery('menu:stats', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply('/stats');
+  });
+
+  bot.callbackQuery('menu:budget', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      '💼 *Budget*\n\n`/budget set food 500 monthly`\n`/budget list`\n`/budget delete food`',
+      { parse_mode: 'Markdown' },
+    );
+  });
+
+  bot.callbackQuery('menu:settings', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply('/settings');
+  });
+
+  bot.callbackQuery('menu:help', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply('/help');
   });
 
   bot.command('help', async (ctx) => {
     await ctx.reply(
       `📖 *EI Bot Help*\n\n` +
-      `*Transactions:*\n/income 500 salary\n/expense 5 coffee\n\n` +
-      `*Reports:*\n/report daily|weekly|monthly|quarterly|yearly\n\n` +
-      `*Budget:*\n/budget set food 500 monthly\n/budget list\n\n` +
-      `*Categories:*\n/category list\n/category add Gaming\n\n` +
-      `*Recurring:*\n/recurring add income 1000 salary monthly\n/recurring list\n\n` +
-      `*Reminders:*\n/remind rent 500 monthly\n/remind list\n\n` +
-      `*Other:*\n/search coffee\n/export csv|xlsx|pdf\n/stats\n/settings`,
+      `*Transactions:*\n\`/income 500 salary\`\n\`/expense 5 coffee\`\n\n` +
+      `*Reports:*\n\`/report daily|weekly|monthly|quarterly|yearly\`\n\n` +
+      `*Budget:*\n\`/budget set food 500 monthly\`\n\`/budget list\`\n\n` +
+      `*Categories:*\n\`/category list\`\n\`/category add Gaming\`\n\n` +
+      `*Recurring:*\n\`/recurring add income 1000 salary monthly\`\n\n` +
+      `*Reminders:*\n\`/remind rent 500 monthly\`\n\n` +
+      `*Other:*\n\`/search coffee\`\n\`/export csv\`\n\`/stats\`\n\`/settings\``,
       { parse_mode: 'Markdown' },
     );
   });
