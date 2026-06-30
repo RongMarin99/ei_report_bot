@@ -112,8 +112,11 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     const icon = type === 'expense' ? '💸' : '💰';
     const hint = currency === 'KHR' ? '20000' : '5';
     await ctx.editMessageText(
-      `${icon} *${type === 'expense' ? 'Expense' : 'Income'}* — ${currency}\n\nHow much? Type the amount:\n\n_Example: \`${hint}\`_\n\nType /cancel to go back.`,
-      { parse_mode: 'Markdown' },
+      `${icon} *${type === 'expense' ? 'Expense' : 'Income'}* — ${currency}\n\nHow much? Type the amount:\n\n_Example: \`${hint}\`_`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard().text('❌ Cancel', 'conv:cancel'),
+      },
     );
   });
 

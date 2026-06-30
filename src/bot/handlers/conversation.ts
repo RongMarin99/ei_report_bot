@@ -15,11 +15,28 @@ function parseAmountInput(text: string): number | null {
 
 export function registerConversationHandlers(bot: Bot<BotContext>) {
 
-  // Cancel command clears any active conversation
-  bot.command('cancel', async (ctx) => {
+  // Cancel button / command — clears conversation, shows menu
+  async function cancelFlow(ctx: any) {
     const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
-    if (user) await ConvService.clearConv(ctx.prisma, user.id);
-    await ctx.reply('❌ Cancelled.\n\nUse /start to open the main menu.');
+    if (user) {
+      await ConvService.clearConv(ctx.prisma, user.id);
+      await ctx.reply('🏠 *Main Menu*', {
+        parse_mode: 'Markdown',
+        reply_markup: mainMenuKeyboard(user),
+      });
+    } else {
+      await ctx.reply('Cancelled. Use /start to begin.');
+    }
+  }
+
+  bot.command('cancel', async (ctx) => {
+    await cancelFlow(ctx);
+  });
+
+  bot.callbackQuery('conv:cancel', async (ctx) => {
+    await ctx.answerCallbackQuery('Cancelled');
+    await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }).catch(() => null);
+    await cancelFlow(ctx);
   });
 
   // Skip description button
@@ -72,7 +89,9 @@ export function registerConversationHandlers(bot: Bot<BotContext>) {
         `${icon} *${displayAmt}*${baseAmt}\n\nAdd a description:`,
         {
           parse_mode: 'Markdown',
-          reply_markup: new InlineKeyboard().text('⏭️ Skip', 'conv:skip'),
+          reply_markup: new InlineKeyboard()
+            .text('⏭️ Skip', 'conv:skip')
+            .text('❌ Cancel', 'conv:cancel'),
         },
       );
       return;
