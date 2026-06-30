@@ -1,9 +1,11 @@
-import { Bot } from 'grammy';
+import { Bot, InputFile } from 'grammy';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { createPrisma } from '../db/prisma';
 import { Env } from '../types';
+import { getSummary, getDateRange, fmtAmount } from '../services/transactions.service';
+import { generateReportPDF } from '../services/pdf.service';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -29,6 +31,8 @@ export async function handleScheduled(
   }
 }
 
+// ─── Recurring transactions ────────────────────────────────────────────────────
+
 async function processRecurringTransactions(prisma: any, bot: Bot) {
   const due = await prisma.recurringTransaction.findMany({
     where: { enabled: true, nextExecution: { lte: new Date() } },
@@ -48,13 +52,10 @@ async function processRecurringTransactions(prisma: any, bot: Bot) {
           transactionDate: new Date(),
         },
       });
-
-      const nextExecution = computeNextDate(rec.frequency);
       await prisma.recurringTransaction.update({
         where: { id: rec.id },
-        data: { nextExecution },
+        data: { nextExecution: computeNextDate(rec.frequency) },
       });
-
       const icon = rec.type === 'income' ? '💰' : '💸';
       await bot.api.sendMessage(
         rec.user.telegramId.toString(),
@@ -66,6 +67,8 @@ async function processRecurringTransactions(prisma: any, bot: Bot) {
   }
 }
 
+// ─── Reminders ────────────────────────────────────────────────────────────────
+
 async function processReminders(prisma: any, bot: Bot) {
   const due = await prisma.reminder.findMany({
     where: { enabled: true, nextExecution: { lte: new Date() } },
@@ -74,13 +77,11 @@ async function processReminders(prisma: any, bot: Bot) {
 
   for (const reminder of due) {
     try {
-      const nextExecution = computeNextDate(reminder.frequency);
       await prisma.reminder.update({
         where: { id: reminder.id },
-        data: { nextExecution },
+        data: { nextExecution: computeNextDate(reminder.frequency) },
       });
-
-      const amountStr = reminder.amount ? ` - ${reminder.user.currency} ${reminder.amount}` : '';
+      const amountStr = reminder.amount ? ` — ${reminder.user.currency} ${reminder.amount}` : '';
       await bot.api.sendMessage(
         reminder.user.telegramId.toString(),
         `⏰ Reminder: ${reminder.title}${amountStr}`,
@@ -90,6 +91,15 @@ async function processReminders(prisma: any, bot: Bot) {
     }
   }
 }
+
+// ─── Scheduled reports ────────────────────────────────────────────────────────
+//
+// Trigger times (all checked hourly):
+//   Daily     → at user's sendTime
+//   Weekly    → Sunday at 12:00 (user TZ)
+//   Monthly   → last day of month at 12:00 (user TZ)
+//   Quarterly → last day of quarter (Mar/Jun/Sep/Dec) at 12:00
+//   Yearly    → Dec 31 at 12:00
 
 async function processScheduledReports(prisma: any, bot: Bot) {
   const now = dayjs();
@@ -103,29 +113,40 @@ async function processScheduledReports(prisma: any, bot: Bot) {
     if (!settings) continue;
 
     try {
-      const userNow = now.tz(settings.timezone);
-      const [sendHour] = settings.sendTime.split(':').map(Number);
+      const tz = settings.timezone || user.timezone || 'UTC';
+      const userNow = now.tz(tz);
+      const hour = userNow.hour();
+      const [sendHour] = (settings.sendTime || '12:00').split(':').map(Number);
 
-      if (userNow.hour() !== sendHour) continue;
+      const dayOfMonth  = userNow.date();
+      const daysInMonth = userNow.daysInMonth();
+      const month       = userNow.month() + 1; // 1-based
+      const isLastDay   = dayOfMonth === daysInMonth;
+      const isLastOfQ   = isLastDay && [3, 6, 9, 12].includes(month);
 
-      const dayOfWeek = userNow.day();
-      const dayOfMonth = userNow.date();
-      const month = userNow.month() + 1;
+      // Daily — fires at user's sendTime
+      if (settings.dailyEnabled && hour === sendHour) {
+        await sendReportPDF(bot, prisma, user, 'daily', tz);
+      }
 
-      if (settings.dailyEnabled) {
-        await sendReportNotification(bot, user, 'daily');
+      // Weekly — Sunday at 12:00
+      if (settings.weeklyEnabled && userNow.day() === 0 && hour === 12) {
+        await sendReportPDF(bot, prisma, user, 'weekly', tz);
       }
-      if (settings.weeklyEnabled && dayOfWeek === 0) {
-        await sendReportNotification(bot, user, 'weekly');
+
+      // Monthly — last day of month at 12:00
+      if (settings.monthlyEnabled && isLastDay && hour === 12) {
+        await sendReportPDF(bot, prisma, user, 'monthly', tz);
       }
-      if (settings.monthlyEnabled && dayOfMonth === 1) {
-        await sendReportNotification(bot, user, 'monthly');
+
+      // Quarterly — last day of quarter at 12:00
+      if (settings.quarterlyEnabled && isLastOfQ && hour === 12) {
+        await sendReportPDF(bot, prisma, user, 'quarterly', tz);
       }
-      if (settings.quarterlyEnabled && dayOfMonth === 1 && [1, 4, 7, 10].includes(month)) {
-        await sendReportNotification(bot, user, 'quarterly');
-      }
-      if (settings.yearlyEnabled && dayOfMonth === 1 && month === 1) {
-        await sendReportNotification(bot, user, 'yearly');
+
+      // Yearly — Dec 31 at 12:00
+      if (settings.yearlyEnabled && month === 12 && dayOfMonth === 31 && hour === 12) {
+        await sendReportPDF(bot, prisma, user, 'yearly', tz);
       }
     } catch (e) {
       console.error(`Report for user ${user.id} failed:`, e);
@@ -133,21 +154,56 @@ async function processScheduledReports(prisma: any, bot: Bot) {
   }
 }
 
-async function sendReportNotification(bot: Bot, user: any, period: string) {
-  await bot.api.sendMessage(
+async function sendReportPDF(bot: Bot, prisma: any, user: any, period: string, tz: string) {
+  const rate = user.exchangeRate ?? 4100;
+  const now = dayjs().tz(tz);
+  const { start, end } = getDateRange(period, tz);
+  const { transactions, totalIncome, totalExpenses } = await getSummary(
+    prisma, user.id, period, tz, user.currency, rate,
+  );
+
+  const label =
+    period === 'daily'     ? `Daily — ${now.format('DD MMM YYYY')}` :
+    period === 'weekly'    ? `Weekly — ${dayjs(start).format('DD MMM')} to ${dayjs(end).format('DD MMM YYYY')}` :
+    period === 'monthly'   ? `Monthly — ${now.format('MMMM YYYY')}` :
+    period === 'quarterly' ? `Q${Math.floor(now.month() / 3) + 1} ${now.year()}` :
+                             `Yearly — ${now.year()}`;
+
+  const pdfBytes = await generateReportPDF({
+    title: label,
+    dateRange: `${dayjs(start).format('DD MMM YYYY')} – ${dayjs(end).format('DD MMM YYYY')}`,
+    baseCurrency: user.currency,
+    exchangeRate: rate,
+    transactions,
+  });
+
+  const filename = `ChhayLuy_${period}_${now.format('YYYY-MM-DD')}.pdf`;
+  const net = totalIncome - totalExpenses;
+
+  await bot.api.sendDocument(
     user.telegramId.toString(),
-    `📊 Your ${period} report is ready! Use /report ${period} to view it.`,
+    new InputFile(pdfBytes, filename),
+    {
+      caption:
+        `📊 *${label}*\n\n` +
+        `💰 Income: ${fmtAmount(totalIncome, user.currency)}\n` +
+        `💸 Expenses: ${fmtAmount(totalExpenses, user.currency)}\n` +
+        `${net >= 0 ? '📈' : '📉'} Net: ${fmtAmount(net, user.currency)}`,
+      parse_mode: 'Markdown',
+    },
   );
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function computeNextDate(frequency: string): Date {
   const now = dayjs();
   switch (frequency) {
-    case 'daily': return now.add(1, 'day').toDate();
-    case 'weekly': return now.add(1, 'week').toDate();
-    case 'monthly': return now.add(1, 'month').toDate();
+    case 'daily':     return now.add(1, 'day').toDate();
+    case 'weekly':    return now.add(1, 'week').toDate();
+    case 'monthly':   return now.add(1, 'month').toDate();
     case 'quarterly': return now.add(3, 'month').toDate();
-    case 'yearly': return now.add(1, 'year').toDate();
-    default: return now.add(1, 'month').toDate();
+    case 'yearly':    return now.add(1, 'year').toDate();
+    default:          return now.add(1, 'month').toDate();
   }
 }

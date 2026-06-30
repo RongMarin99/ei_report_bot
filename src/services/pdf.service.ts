@@ -1,7 +1,7 @@
 /**
  * Zero-dependency raw PDF builder.
- * Standard Type1 fonts (Helvetica) are referenced by name — no binary font data embedded.
- * Runs in microseconds vs pdf-lib's milliseconds — safe for CF Workers 10ms CPU limit.
+ * Standard Type1 fonts (Helvetica) — no binary font data embedded.
+ * Runs in microseconds, safe for CF Workers CPU limit.
  */
 
 import { toBaseCurrency } from './transactions.service';
@@ -10,14 +10,14 @@ import { toBaseCurrency } from './transactions.service';
 
 function esc(s: string): string {
   return String(s)
-    .replace(/[^\x20-\x7E]/g, '')   // strip non-ASCII (KHR riel, emoji, etc.)
+    .replace(/[^\x20-\x7E]/g, '')
     .replace(/\\/g, '\\\\')
     .replace(/\(/g, '\\(')
     .replace(/\)/g, '\\)');
 }
 
 function fmtAmt(amount: number, currency: string): string {
-  if (currency === 'KHR') return `${Math.round(amount).toLocaleString()} KHR`;
+  if (currency === 'KHR') return `${Math.round(Math.abs(amount)).toLocaleString()} KHR`;
   return `${Math.abs(amount).toFixed(2)} ${currency}`;
 }
 
@@ -51,20 +51,13 @@ class Page {
     this.ops.push(`BT /${bold ? 'FB' : 'F1'} ${size} Tf ${c(color)} ${x} ${y} Td (${esc(s)}) Tj ET`);
   }
 
-  stream(): string {
-    return this.ops.join('\n');
-  }
+  stream(): string { return this.ops.join('\n'); }
 }
 
 // ─── Multi-page PDF serializer ────────────────────────────────────────────────
 
 function buildPDF(pageList: Page[]): Uint8Array {
   const N = pageList.length;
-  // Object ID layout (1-based):
-  // 1 = Catalog, 2 = Pages
-  // 3..3+N-1 = Page objects
-  // 3+N..3+2N-1 = Content streams
-  // 3+2N = Helvetica, 3+2N+1 = Helvetica-Bold
   const TOTAL = 3 + 2 * N + 2;
   const pIds  = Array.from({ length: N }, (_, i) => 3 + i);
   const sIds  = Array.from({ length: N }, (_, i) => 3 + N + i);
@@ -81,7 +74,6 @@ function buildPDF(pageList: Page[]): Uint8Array {
 
   wo(1, `<</Type /Catalog /Pages 2 0 R>>`);
   wo(2, `<</Type /Pages /Kids [${pIds.map(id => `${id} 0 R`).join(' ')}] /Count ${N}>>`);
-
   for (let i = 0; i < N; i++) {
     wo(pIds[i],
       `<</Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ` +
@@ -89,13 +81,11 @@ function buildPDF(pageList: Page[]): Uint8Array {
       `/Contents ${sIds[i]} 0 R>>`,
     );
   }
-
   for (let i = 0; i < N; i++) {
     const s = pageList[i].stream();
     off[sIds[i]] = pdf.length;
     pdf += `${sIds[i]} 0 obj\n<</Length ${s.length}>>\nstream\n${s}\nendstream\nendobj\n`;
   }
-
   wo(fReg,  `<</Type /Font /Subtype /Type1 /BaseFont /Helvetica      /Encoding /WinAnsiEncoding>>`);
   wo(fBold, `<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>`);
 
@@ -106,7 +96,6 @@ function buildPDF(pageList: Page[]): Uint8Array {
     pdf += `${String(off[id]).padStart(10, '0')} 00000 n\r\n`;
   }
   pdf += `trailer\n<</Size ${TOTAL} /Root 1 0 R>>\nstartxref\n${xrefOff}\n%%EOF`;
-
   return new TextEncoder().encode(pdf);
 }
 
@@ -121,20 +110,34 @@ export async function generateReportPDF(params: {
 }): Promise<Uint8Array> {
   const { title, dateRange, baseCurrency, exchangeRate } = params;
 
+  // Keep ORIGINAL amounts and currencies — don't convert per row
   const rows = params.transactions.map((t) => ({
     date: new Date(t.transactionDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
     type: t.type as string,
     category: esc((t.category?.name ?? 'Other').slice(0, 16)),
-    amount: toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate),
+    amount: Number(t.amount),
+    currency: String(t.currency),
     note: esc((t.note ?? '').slice(0, 32)),
   }));
 
   const income   = rows.filter((r) => r.type === 'income');
   const expenses = rows.filter((r) => r.type === 'expense');
-  const totalIn  = income.reduce((s, r) => s + r.amount, 0);
-  const totalEx  = expenses.reduce((s, r) => s + r.amount, 0);
-  const net      = totalIn - totalEx;
-  const savings  = totalIn > 0 ? ((net / totalIn) * 100).toFixed(1) : '0.0';
+
+  // Unique currencies across all transactions
+  const currencies = [...new Set(rows.map((r) => r.currency))];
+
+  // Per-currency subtotals
+  const byCurrency = currencies.map((cur) => {
+    const curInc = income.filter((r) => r.currency === cur).reduce((s, r) => s + r.amount, 0);
+    const curExp = expenses.filter((r) => r.currency === cur).reduce((s, r) => s + r.amount, 0);
+    return { cur, curInc, curExp, curNet: curInc - curExp };
+  });
+
+  // Grand totals converted to base currency
+  const grandIncome   = income.reduce((s, r) => s + toBaseCurrency(r.amount, r.currency, baseCurrency, exchangeRate), 0);
+  const grandExpenses = expenses.reduce((s, r) => s + toBaseCurrency(r.amount, r.currency, baseCurrency, exchangeRate), 0);
+  const grandNet      = grandIncome - grandExpenses;
+  const savings       = grandIncome > 0 ? ((grandNet / grandIncome) * 100).toFixed(1) : '0.0';
 
   const pages: Page[] = [];
   let pg = new Page();
@@ -144,26 +147,21 @@ export async function generateReportPDF(params: {
   let y = 800;
 
   function checkSpace(need: number) {
-    if (y - need < 50) {
-      pg = new Page();
-      pages.push(pg);
-      y = 800;
-    }
+    if (y - need < 50) { pg = new Page(); pages.push(pg); y = 800; }
   }
 
   // ── Header ──────────────────────────────────────────────────────────────────
   pg.rect(L, y - 48, W, 48, BLUE);
-  pg.text('ChhayLuy Report Bot', L + 10, y - 18, 14, true, WHITE);
-  pg.text(title,            L + 10, y - 34, 10, false, WHITE);
-  pg.text(dateRange,        R - 190, y - 18, 8,  false, [0.8, 0.9, 1]);
-  pg.text(`Base: ${baseCurrency}  Rate: 1 USD = ${Math.round(exchangeRate).toLocaleString()} KHR`,
-    R - 190, y - 32, 7.5, false, [0.8, 0.9, 1]);
-  y -= 60;
+  pg.text('ChhayLuy Report Bot', L + 10, y - 18, 13, true,  WHITE);
+  pg.text(title,                  L + 10, y - 34, 10, false, WHITE);
+  pg.text(dateRange,              R - 185, y - 18, 8,  false, [0.8, 0.9, 1]);
+  pg.text(`Base: ${baseCurrency}  1 USD = ${Math.round(exchangeRate).toLocaleString()} KHR`,
+    R - 185, y - 32, 7.5, false, [0.8, 0.9, 1]);
+  y -= 62;
 
-  // ── Section renderer ─────────────────────────────────────────────────────────
-  function drawSection(label: string, txRows: typeof rows, total: number, isExpense: boolean) {
+  // ── Section renderer (rows show ORIGINAL price) ───────────────────────────
+  function drawSection(label: string, txRows: typeof rows, isExpense: boolean) {
     const accent: RGB = isExpense ? RED : GREEN;
-
     checkSpace(48);
     pg.line(L, y, R, y, accent, 1.2);
     y -= 16;
@@ -176,7 +174,6 @@ export async function generateReportPDF(params: {
       return;
     }
 
-    // Column headers
     pg.text('Date',     L,       y, 8, true, MUTED);
     pg.text('Category', L + 58,  y, 8, true, MUTED);
     pg.text('Amount',   L + 162, y, 8, true, MUTED);
@@ -187,47 +184,72 @@ export async function generateReportPDF(params: {
 
     for (const r of txRows) {
       checkSpace(15);
-      pg.text(r.date,           L,       y, 8.5, false, DARK);
-      pg.text(r.category,       L + 58,  y, 8.5, false, DARK);
-      pg.text(fmtAmt(r.amount, baseCurrency), L + 162, y, 8.5, false, accent);
-      if (r.note) pg.text(r.note, L + 258, y, 8.5, false, MUTED);
+      pg.text(r.date,                   L,       y, 8.5, false, DARK);
+      pg.text(r.category,               L + 58,  y, 8.5, false, DARK);
+      pg.text(fmtAmt(r.amount, r.currency), L + 162, y, 8.5, false, accent);
+      if (r.note) pg.text(r.note,       L + 258, y, 8.5, false, MUTED);
       y -= 15;
     }
-
-    checkSpace(18);
-    pg.line(L, y, R, y, GRAY, 0.4);
-    y -= 14;
-    pg.text('TOTAL', L, y, 9, true, DARK);
-    pg.text(fmtAmt(total, baseCurrency), L + 162, y, 9, true, accent);
-    y -= 22;
+    y -= 6;
   }
 
-  drawSection('INCOME', income, totalIn, false);
-  y -= 6;
-  drawSection('EXPENSES', expenses, totalEx, true);
-  y -= 12;
+  drawSection('INCOME', income, false);
+  drawSection('EXPENSES', expenses, true);
 
-  // ── Summary ──────────────────────────────────────────────────────────────────
-  checkSpace(75);
+  // ── Summary ───────────────────────────────────────────────────────────────
+  checkSpace(30 + byCurrency.length * 52 + 80);
+
   pg.line(L, y, R, y, BLUE, 1.2);
   y -= 16;
-  pg.text('SUMMARY', L, y, 10, true, BLUE);
+  pg.text('SUMMARY BY CURRENCY', L, y, 10, true, BLUE);
   y -= 18;
 
-  const summaryData = [
-    { label: 'Total Income',   val: fmtAmt(totalIn, baseCurrency), color: GREEN },
-    { label: 'Total Expenses', val: fmtAmt(totalEx, baseCurrency), color: RED },
-    { label: 'Net Balance',    val: fmtAmt(net, baseCurrency),     color: net >= 0 ? GREEN : RED },
-    { label: 'Savings Rate',   val: `${savings}%`,                  color: DARK },
-  ] as const;
-
-  for (const s of summaryData) {
-    pg.text(s.label, L,       y, 10, true,  DARK);
-    pg.text(s.val,   L + 220, y, 10, true,  s.color as RGB);
+  // Per-currency rows
+  for (const { cur, curInc, curExp, curNet } of byCurrency) {
+    if (curInc === 0 && curExp === 0) continue;
+    checkSpace(52);
+    pg.text(`${cur}`, L, y, 9, true, DARK);
+    y -= 15;
+    if (curInc > 0) {
+      pg.text('Income:',   L + 12, y, 8.5, false, MUTED);
+      pg.text(fmtAmt(curInc, cur), L + 72, y, 8.5, false, GREEN);
+      y -= 14;
+    }
+    if (curExp > 0) {
+      pg.text('Expenses:', L + 12, y, 8.5, false, MUTED);
+      pg.text(fmtAmt(curExp, cur), L + 72, y, 8.5, false, RED);
+      y -= 14;
+    }
+    pg.text('Net:',      L + 12, y, 8.5, false, MUTED);
+    pg.text(fmtAmt(curNet, cur), L + 72, y, 8.5, false, curNet >= 0 ? GREEN : RED);
     y -= 18;
   }
 
-  // ── Footer on every page ─────────────────────────────────────────────────────
+  // Grand total in base currency
+  if (currencies.length > 0) {
+    checkSpace(68);
+    y -= 4;
+    pg.line(L, y, R, y, GRAY, 0.4);
+    y -= 14;
+    pg.text(`TOTAL IN ${baseCurrency}  (rate: 1 USD = ${Math.round(exchangeRate).toLocaleString()} KHR)`,
+      L, y, 9, true, BLUE);
+    y -= 16;
+
+    const totRows = [
+      { label: 'Total Income',   val: fmtAmt(grandIncome,   baseCurrency), color: GREEN },
+      { label: 'Total Expenses', val: fmtAmt(grandExpenses, baseCurrency), color: RED },
+      { label: 'Net Balance',    val: fmtAmt(grandNet,      baseCurrency), color: grandNet >= 0 ? GREEN : RED },
+      { label: 'Savings Rate',   val: `${savings}%`,                        color: DARK },
+    ] as const;
+
+    for (const s of totRows) {
+      pg.text(s.label, L,       y, 9.5, true,  DARK);
+      pg.text(s.val,   L + 210, y, 9.5, true,  s.color as RGB);
+      y -= 17;
+    }
+  }
+
+  // ── Footer ────────────────────────────────────────────────────────────────
   const totalPages = pages.length;
   pages.forEach((p, i) => {
     p.line(L, 30, R, 30, GRAY, 0.5);
