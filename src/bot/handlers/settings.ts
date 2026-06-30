@@ -69,11 +69,22 @@ export function registerSettingsHandlers(bot: Bot<BotContext>) {
 
     const settings = await UsersService.getOrCreateReportSettings(ctx.prisma, user.id);
     const key = `${period}Enabled` as any;
-    await UsersService.updateReportSettings(ctx.prisma, user.id, { [key]: !settings[key] });
+    const nowEnabled = !settings[key];
+    await UsersService.updateReportSettings(ctx.prisma, user.id, { [key]: nowEnabled });
 
-    await ctx.answerCallbackQuery(`${period} reports ${!settings[key] ? 'enabled' : 'disabled'}`);
-    await ctx.deleteMessage().catch(() => null);
-    await ctx.reply(`✅ ${period.charAt(0).toUpperCase() + period.slice(1)} reports ${!settings[key] ? 'enabled ✅' : 'disabled ❌'}\n\nUse /settings to view all settings.`);
+    await ctx.answerCallbackQuery(`${period} ${nowEnabled ? 'enabled ✅' : 'disabled ❌'}`);
+
+    // Refresh the schedule keyboard
+    const s = await UsersService.getOrCreateReportSettings(ctx.prisma, user.id);
+    const { InlineKeyboard } = await import('grammy');
+    await ctx.editMessageReplyMarkup({
+      reply_markup: new InlineKeyboard()
+        .text(`${s.dailyEnabled ? '✅' : '❌'} Daily`, 'toggle_report:daily')
+        .text(`${s.weeklyEnabled ? '✅' : '❌'} Weekly`, 'toggle_report:weekly').row()
+        .text(`${s.monthlyEnabled ? '✅' : '❌'} Monthly`, 'toggle_report:monthly')
+        .text(`${s.quarterlyEnabled ? '✅' : '❌'} Quarterly`, 'toggle_report:quarterly').row()
+        .text(`${s.yearlyEnabled ? '✅' : '❌'} Yearly`, 'toggle_report:yearly'),
+    }).catch(() => null);
   });
 
   bot.callbackQuery('settings:currency', async (ctx) => {
