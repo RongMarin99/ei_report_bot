@@ -70,10 +70,30 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     }
   });
 
-  // ─── Registration ─────────────────────────────────────────────────────────
+  // ─── Registration step 1: currency ───────────────────────────────────────
 
   bot.callbackQuery(/^reg:([A-Z]+)$/, async (ctx) => {
     const currency = ctx.match[1];
+    await ctx.answerCallbackQuery();
+    // Step 2: timezone
+    await ctx.editMessageText(
+      `✅ Currency: *${currency}*\n\nNow choose your *timezone*:`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('🇰🇭 Phnom Penh (UTC+7)', `reg:tz:${currency}:Asia/Phnom_Penh`).row()
+          .text('🇹🇭 Bangkok (UTC+7)',     `reg:tz:${currency}:Asia/Bangkok`).row()
+          .text('🇸🇬 Singapore (UTC+8)',   `reg:tz:${currency}:Asia/Singapore`).row()
+          .text('🌍 UTC',                  `reg:tz:${currency}:UTC`),
+      },
+    );
+  });
+
+  // ─── Registration step 2: timezone → done ────────────────────────────────
+
+  bot.callbackQuery(/^reg:tz:([A-Z]+):(.+)$/, async (ctx) => {
+    const currency = ctx.match[1];
+    const timezone = ctx.match[2];
     await ctx.answerCallbackQuery();
 
     const user = await UsersService.createUser(ctx.prisma, {
@@ -81,14 +101,16 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
       username: ctx.from!.username,
       firstName: ctx.from!.first_name,
       currency,
-      timezone: 'UTC',
+      timezone,
       language: 'en',
     });
 
+    // Seed categories and create report settings with correct timezone
     await CategoriesService.seedDefaultCategories(ctx.prisma, user.id);
+    await UsersService.getOrCreateReportSettings(ctx.prisma, user.id, timezone);
 
     await ctx.editMessageText(
-      `🎉 *Setup complete!*\n\nBase: *${currency}*  |  Rate: 1 USD = 4,100 KHR\n\n_Tap the Rate button anytime to update the exchange rate._\n\nWhat would you like to do?`,
+      `🎉 *Setup complete!*\n\nBase: *${currency}*  |  Timezone: *${timezone}*\n\nWhat would you like to do?`,
       { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard(user) },
     );
   });

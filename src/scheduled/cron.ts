@@ -19,11 +19,17 @@ export async function handleScheduled(
   const bot = new Bot(env.BOT_TOKEN);
 
   try {
+    // Recurring transactions + reminders run every cron trigger (*/15 for freshness)
     await Promise.all([
       processRecurringTransactions(prisma, bot),
       processReminders(prisma, bot),
-      processScheduledReports(prisma, bot),
     ]);
+
+    // Scheduled reports ONLY on the hourly cron — prevents 4x duplicate sends
+    // from the */15 cron firing within the same hour
+    if (event.cron === '0 * * * *') {
+      await processScheduledReports(prisma, bot);
+    }
   } catch (e) {
     console.error('Scheduled job error:', e);
   } finally {
@@ -94,12 +100,12 @@ async function processReminders(prisma: any, bot: Bot) {
 
 // ─── Scheduled reports ────────────────────────────────────────────────────────
 //
-// Trigger times (all checked hourly):
-//   Daily     → at user's sendTime
-//   Weekly    → Sunday at 12:00 (user TZ)
-//   Monthly   → last day of month at 12:00 (user TZ)
-//   Quarterly → last day of quarter (Mar/Jun/Sep/Dec) at 12:00
-//   Yearly    → Dec 31 at 12:00
+// Trigger times (all in user's local timezone, at their configured sendTime):
+//   Daily     → every day at sendTime
+//   Weekly    → Sunday at sendTime
+//   Monthly   → last day of month at sendTime
+//   Quarterly → last day of quarter (Mar/Jun/Sep/Dec) at sendTime
+//   Yearly    → Dec 31 at sendTime
 
 async function processScheduledReports(prisma: any, bot: Bot) {
   const now = dayjs();
@@ -124,28 +130,31 @@ async function processScheduledReports(prisma: any, bot: Bot) {
       const isLastDay   = dayOfMonth === daysInMonth;
       const isLastOfQ   = isLastDay && [3, 6, 9, 12].includes(month);
 
-      // Daily — fires at user's sendTime
-      if (settings.dailyEnabled && hour === sendHour) {
+      // All periods trigger at user's configured sendTime (local timezone)
+      if (hour !== sendHour) continue;
+
+      // Daily — every day at sendTime
+      if (settings.dailyEnabled) {
         await sendReportPDF(bot, prisma, user, 'daily', tz);
       }
 
-      // Weekly — Sunday at 12:00
-      if (settings.weeklyEnabled && userNow.day() === 0 && hour === 12) {
+      // Weekly — Sunday at sendTime
+      if (settings.weeklyEnabled && userNow.day() === 0) {
         await sendReportPDF(bot, prisma, user, 'weekly', tz);
       }
 
-      // Monthly — last day of month at 12:00
-      if (settings.monthlyEnabled && isLastDay && hour === 12) {
+      // Monthly — last day of month at sendTime
+      if (settings.monthlyEnabled && isLastDay) {
         await sendReportPDF(bot, prisma, user, 'monthly', tz);
       }
 
-      // Quarterly — last day of quarter at 12:00
-      if (settings.quarterlyEnabled && isLastOfQ && hour === 12) {
+      // Quarterly — last day of quarter (Mar/Jun/Sep/Dec) at sendTime
+      if (settings.quarterlyEnabled && isLastOfQ) {
         await sendReportPDF(bot, prisma, user, 'quarterly', tz);
       }
 
-      // Yearly — Dec 31 at 12:00
-      if (settings.yearlyEnabled && month === 12 && dayOfMonth === 31 && hour === 12) {
+      // Yearly — Dec 31 at sendTime
+      if (settings.yearlyEnabled && month === 12 && dayOfMonth === 31) {
         await sendReportPDF(bot, prisma, user, 'yearly', tz);
       }
     } catch (e) {

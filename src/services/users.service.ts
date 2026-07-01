@@ -26,10 +26,10 @@ export async function updateUser(
   return prisma.user.update({ where: { id: userId }, data });
 }
 
-export async function getOrCreateReportSettings(prisma: PrismaClient, userId: number) {
+export async function getOrCreateReportSettings(prisma: PrismaClient, userId: number, timezone = 'UTC') {
   return prisma.reportSettings.upsert({
     where: { userId },
-    create: { userId, timezone: 'UTC' },
+    create: { userId, timezone },
     update: {},
   });
 }

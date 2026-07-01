@@ -1,4 +1,4 @@
-import { Bot } from 'grammy';
+import { Bot, InlineKeyboard } from 'grammy';
 import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
 import { buildScheduleKeyboard } from './start';
@@ -107,6 +107,38 @@ export function registerSettingsHandlers(bot: Bot<BotContext>) {
 
     await UsersService.updateUser(ctx.prisma, user.id, { currency });
     await ctx.editMessageText(`✅ Base currency set to ${currency}\n\nAll reports will now show in ${currency}.`);
+    await ctx.answerCallbackQuery();
+  });
+
+  // ─── Timezone change ──────────────────────────────────────────────────────
+
+  bot.command('timezone', async (ctx) => {
+    await ctx.reply(
+      '🕐 *Set Timezone*\n\nChoose your timezone:',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard()
+          .text('🇰🇭 Phnom Penh (UTC+7)', 'set_tz:Asia/Phnom_Penh').row()
+          .text('🇹🇭 Bangkok (UTC+7)',     'set_tz:Asia/Bangkok').row()
+          .text('🇸🇬 Singapore (UTC+8)',   'set_tz:Asia/Singapore').row()
+          .text('🌍 UTC',                  'set_tz:UTC'),
+      },
+    );
+  });
+
+  bot.callbackQuery(/^set_tz:(.+)$/, async (ctx) => {
+    const timezone = ctx.match[1];
+    const user = await UsersService.findByTelegramId(ctx.prisma, BigInt(ctx.from!.id));
+    if (!user) return ctx.answerCallbackQuery('User not found');
+
+    // Update both user timezone and report settings timezone
+    await UsersService.updateUser(ctx.prisma, user.id, { timezone });
+    await UsersService.updateReportSettings(ctx.prisma, user.id, { timezone });
+
+    await ctx.editMessageText(
+      `✅ *Timezone updated*\n\n🕐 ${timezone}\n\nAuto reports will now send at the correct local time.`,
+      { parse_mode: 'Markdown' },
+    );
     await ctx.answerCallbackQuery();
   });
 }
