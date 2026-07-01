@@ -3,7 +3,7 @@ import { BotContext } from '../../types';
 import * as UsersService from '../../services/users.service';
 import * as CategoriesService from '../../services/categories.service';
 import * as ConvService from '../../services/conversation.service';
-import { getSummary, getDateRange, fmtAmount as fmt, getStats } from '../../services/transactions.service';
+import { getSummary, getDateRange, fmtAmount as fmt, getStats, toBaseCurrency } from '../../services/transactions.service';
 import { generateReportPDF } from '../../services/pdf.service';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
@@ -265,10 +265,19 @@ export function registerStartHandlers(bot: Bot<BotContext>) {
     msg += `Avg monthly income: ${fmt(stats.avgMonthlyIncome, user.currency)}\n`;
     msg += `Savings rate: ${stats.savingsRate.toFixed(1)}%\n`;
     if (stats.highestExpense) {
-      msg += `Biggest expense: ${fmt(stats.highestExpense.amount, user.currency)}${stats.highestExpense.note ? ` — ${stats.highestExpense.note}` : ''}\n`;
+      const he = stats.highestExpense as any;
+      // Show ORIGINAL amount in original currency
+      const origStr = he.currency === 'KHR'
+        ? `${Math.round(he.amount).toLocaleString()} KHR`
+        : `${Number(he.amount).toFixed(2)} ${he.currency}`;
+      // Also show converted to base if different currency
+      const convStr = he.currency !== user.currency
+        ? ` (≈ ${fmt(toBaseCurrency(Number(he.amount), he.currency, user.currency, rate), user.currency)})`
+        : '';
+      msg += `Biggest expense: ${origStr}${convStr}${he.note ? ` — ${he.note}` : ''}\n`;
     }
     if (stats.topCategories.length > 0) {
-      msg += `\n*Top Spending Categories:*\n`;
+      msg += `\n*Top Categories (in ${user.currency}):*\n`;
       stats.topCategories.forEach((c, i) => {
         msg += `${i + 1}. ${c.icon} ${c.name}: ${fmt(c.total, user.currency)}\n`;
       });

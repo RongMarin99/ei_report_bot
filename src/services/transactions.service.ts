@@ -142,52 +142,52 @@ export async function getStats(prisma: PrismaClient, userId: number, tz: string,
     orderBy: { transactionDate: 'asc' },
   });
 
-  const allTxns = await prisma.transaction.findMany({ where: { userId } });
-  const totalExpenses = allTxns
-    .filter((t) => t.type === 'expense')
-    .reduce((s, t) => s + toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate), 0);
-  const totalIncome = allTxns
-    .filter((t) => t.type === 'income')
-    .reduce((s, t) => s + toBaseCurrency(t.amount, t.currency, baseCurrency, exchangeRate), 0);
-
-  const daysSinceFirst = firstTx
-    ? Math.max(1, dayjs().diff(dayjs(firstTx.transactionDate), 'day'))
-    : 1;
-  const monthsSinceFirst = Math.max(1, daysSinceFirst / 30);
-
-  const highestExpense = await prisma.transaction.findFirst({
-    where: { userId, type: 'expense' },
-    orderBy: { amount: 'desc' },
+  // Fetch all transactions with categories — do currency conversion in JS
+  const allTxns = await prisma.transaction.findMany({
+    where: { userId },
     include: { category: true },
   });
 
-  const categoryGroups = await prisma.transaction.groupBy({
-    by: ['categoryId'],
-    where: { userId, type: 'expense' },
-    _sum: { amount: true },
-    orderBy: { _sum: { amount: 'desc' } },
-    take: 5,
-  });
+  const expenses = allTxns.filter((t) => t.type === 'expense');
+  const incomes  = allTxns.filter((t) => t.type === 'income');
 
-  const topCategories = await Promise.all(
-    categoryGroups.map(async (g) => {
-      const cat = g.categoryId
-        ? await prisma.category.findUnique({ where: { id: g.categoryId } })
-        : null;
-      return {
-        name: cat?.name ?? 'Other',
-        icon: cat?.icon ?? '📌',
-        total: g._sum.amount ?? 0,
-      };
-    }),
-  );
+  const totalExpenses = expenses.reduce((s, t) => s + toBaseCurrency(Number(t.amount), t.currency, baseCurrency, exchangeRate), 0);
+  const totalIncome   = incomes.reduce((s, t)  => s + toBaseCurrency(Number(t.amount), t.currency, baseCurrency, exchangeRate), 0);
+
+  const daysSinceFirst   = firstTx ? Math.max(1, dayjs().diff(dayjs(firstTx.transactionDate), 'day')) : 1;
+  const monthsSinceFirst = Math.max(1, daysSinceFirst / 30);
+
+  // Highest expense: compare after converting to base currency
+  const highestExpense = expenses.reduce((max: any, t) => {
+    const tBase = toBaseCurrency(Number(t.amount), t.currency, baseCurrency, exchangeRate);
+    const mBase = max ? toBaseCurrency(Number(max.amount), max.currency, baseCurrency, exchangeRate) : -1;
+    return tBase > mBase ? t : max;
+  }, null);
+
+  // Top categories: group manually with currency-converted totals
+  const catMap = new Map<string, { name: string; icon: string; total: number }>();
+  for (const t of expenses) {
+    const key  = String(t.categoryId ?? 'none');
+    const base = toBaseCurrency(Number(t.amount), t.currency, baseCurrency, exchangeRate);
+    if (!catMap.has(key)) {
+      catMap.set(key, {
+        name:  (t as any).category?.name ?? 'Other',
+        icon:  (t as any).category?.icon ?? '📌',
+        total: 0,
+      });
+    }
+    catMap.get(key)!.total += base;
+  }
+  const topCategories = [...catMap.values()]
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
 
   const savingsRate = totalIncome > 0 ? ((totalIncome - totalExpenses) / totalIncome) * 100 : 0;
 
   return {
     totalTransactions,
-    avgDailySpending: totalExpenses / daysSinceFirst,
-    avgMonthlyIncome: totalIncome / monthsSinceFirst,
+    avgDailySpending:  totalExpenses / daysSinceFirst,
+    avgMonthlyIncome:  totalIncome / monthsSinceFirst,
     highestExpense,
     topCategories,
     savingsRate,
